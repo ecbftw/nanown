@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+#-*- mode: Python;-*-
+
+import sys
+import os
+import time
+import random
+import tempfile
+import argparse
+import socket
+import json
+try:
+    import requests
+except:
+    sys.stderr.write('ERROR: Could not import requests module.  Ensure it is installed.\n')
+    sys.stderr.write('       Under Debian, the package name is "python3-requests"\n.')
+    sys.exit(1)
+
+VERSION = "{DEVELOPMENT}"
+if VERSION == "{DEVELOPMENT}":
+    script_dir = '.'
+    try:
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+    except:
+        try:
+            script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        except:
+            pass
+    sys.path.append("%s/../lib" % script_dir)
+
+from nanownlib import *
+import nanownlib.storage
+
+parser = argparse.ArgumentParser(
+    description="")
+parser.add_argument('-c', dest='cases', type=str, default='{"short":10000,"long":13000}',
+                    help='JSON representation of echo timing cases.')
+parser.add_argument('--tcpts', action='store_true', help='Enable TCP timestamp profiling')
+parser.add_argument('session_name', default=None,
+                    help='Name for the sampler session (used in output filenames)')
+parser.add_argument('sample_count', type=int, default=None,
+                    help='Number of samples to collect')
+parser.add_argument('host', default=None,
+                    help='IP address or host name of server')
+parser.add_argument('port', nargs='?', type=int, default=80,
+                    help='TCP port number of HTTP service (default: 80)')
+options = parser.parse_args()
+
+
+session_name = options.session_name
+num_samples=options.sample_count
+hostname = options.host
+port = options.port
+protocol = 'http'
+
+cases = json.loads(options.cases)
+
+def extractReportedRuntime(headers, body):
+    if body.startswith("waited: "):
+        return int(body.split("waited: ")[1], 10)
+
+
+def sendRequest(data=None):
+    method = 'GET'
+    path = '/data/clamav-audit-results.txt?t=' + data
+    url = "%s://%s:%d%s" % (protocol,hostname,port,path)
+    headers = {}
+    body = (b'')
+    req = requests.Request('GET', url).prepare()
+
+    retry = True
+    while retry:
+        try:
+            session = requests.Session()
+            response = session.send(req)
+            #print(repr(response.raw._original_response.local_address))
+            reported = extractReportedRuntime(response.headers, response.text)
+            retry = False
+        except Exception as e:
+            sys.stderr.write("ERROR: HTTP request problem: %s\n" % repr(e))
+            time.sleep(1.0)
+            sys.stderr.write("ERROR: retrying...\n")
+    
+    return {'userspace_rtt':response.elapsed.microseconds*1000,
+            'reported':reported,
+            'local_port':response.raw._original_response.local_address[1]}
+
+
+def fetch(probedata, data):
+    #   http://docs.python-requests.org/en/latest/api/#requests.Response
+    result = sendRequest("%d" % data)
+    result.update(probedata)
+    
+    return result
+
+
+setCPUAffinity()
+setTCPTimestamps()
+host_ip = socket.gethostbyname(hostname) #XXX: what about multiple A records?
+
+meta = {'tcpts_mean':None,'tcpts_stddev':None,'tcpts_slopes':None}
+if options.tcpts:
+    sys.stderr.write("INFO: Probing target for TCP timestamp precision...\n")
+    sniffer_fp = tempfile.NamedTemporaryFile('w+t')
+    sniffer = startSniffer(host_ip, port, sniffer_fp.name)
+    time.sleep(1.0)
+    ports = runTimestampProbes(host_ip, port, hostname, 12)
+    time.sleep(1.0)
+    stopSniffer(sniffer)
+    sniffer_fp.seek(0)
+    mean,stddev,slopes = computeTimestampPrecision(sniffer_fp, ports)
+    meta = {'tcpts_mean':mean,'tcpts_stddev':stddev,'tcpts_slopes':json.dumps(slopes)}
+    
+if meta['tcpts_mean'] == None:
+    sys.stderr.write("INFO: TCP timestamps not supported.\n")
+elif meta['tcpts_stddev'] == None:
+    sys.stderr.write("INFO: Not enough TCP timestamp samples.\n")
+elif meta['tcpts_stddev']/meta['tcpts_mean'] > 0.05:
+    sys.stderr.write("INFO: TCP timestamp precision is inconsistent.\n")
+    sys.stderr.write("INFO:     mean=%(tcpts_mean)f,stddev=%(tcpts_stddev)f,samples=%(tcpts_slopes)s\n"
+                     % meta)
+else:
+    sys.stderr.write("INFO: Estimated TCP timestamp precision: %f (stddev: %f, %f%%)\n"
+                     % (meta['tcpts_mean'], meta['tcpts_stddev'], 100*meta['tcpts_stddev']/meta['tcpts_mean']))
+
+
+sniffer_fp = tempfile.NamedTemporaryFile('w+t')
+db_file = "%s.db" % session_name
+
+sniffer = startSniffer(host_ip, port, sniffer_fp.name)
+db = nanownlib.storage.db(db_file)
+db.addMeta(meta)
+time.sleep(0.5) # ensure sniffer is fully ready and our process is migrated
+
+sid = 0
+sample_types = [('train',int(num_samples*2/7)),
+                ('train_null',int(num_samples*3/7)+1),
+                ('test',int(num_samples*2/7)),
+                ('test_null',0)]
+report_interval = 20
+start = time.time()
+next_report = start+report_interval
+for st,count in sample_types:
+    if sniffer.poll() != None:
+        sys.stderr.write('ERROR: Sniffer quit, sender exiting...\n')
+        break
+        
+    for k in range(0,count):
+        sample_order = list(cases.items())
+        random.shuffle(sample_order)
+        if st.endswith('null'):
+            for i in range(1,len(sample_order)):
+                sample_order[i] = (sample_order[i][0],sample_order[0][1])
+            random.shuffle(sample_order)
+            #print('after', sample_order)
+            
+        results = []
+        now = int(time.time()*1000000000)
+        for i in range(len(sample_order)):
+            results.append(fetch({'sample':sid, 'test_case':sample_order[i][0],
+                                  'type':st, 'tc_order':i, 'time_of_day':now},
+                                 sample_order[i][1]))
+
+        #print(results)
+        db.addProbes(results)
+        db.conn.commit()
+        sid += 1
+
+        if (time.time() > next_report):
+            #s = time.time()
+            reportProgress(db, sample_types, start)
+            #print("reportProgress time:", time.time()-s)
+            next_report += report_interval
+
+print("probes complete in %f" % (time.time()-start))
+time.sleep(2.0) # Give sniffer a chance to collect remaining packets
+stopSniffer(sniffer)
+
+start = time.time()
+associatePackets(sniffer_fp, db)
+sniffer_fp.close()
+end = time.time()
+print("associate time:", end-start)
+
+start = time.time()
+num_probes = analyzeProbes(db)
+end = time.time()
+print("analyzed %d probes' packets in: %f" % (num_probes, end-start))
