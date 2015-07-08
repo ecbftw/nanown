@@ -35,7 +35,7 @@ parser = argparse.ArgumentParser(
     description="")
 parser.add_argument('-c', dest='cases', type=str, default='{"short":10000,"long":13000}',
                     help='JSON representation of echo timing cases.')
-parser.add_argument('--tcpts', action='store_true', help='Enable TCP timestamp profiling')
+parser.add_argument('--no-tcpts', action='store_true', help='Disbale TCP timestamp profiling')
 parser.add_argument('session_name', default=None,
                     help='Name for the sampler session (used in output filenames)')
 parser.add_argument('sample_count', type=int, default=None,
@@ -99,7 +99,7 @@ setTCPTimestamps()
 host_ip = socket.gethostbyname(hostname) #XXX: what about multiple A records?
 
 meta = {'tcpts_mean':None,'tcpts_stddev':None,'tcpts_slopes':None}
-if options.tcpts:
+if not options.no_tcpts:
     sys.stderr.write("INFO: Probing target for TCP timestamp precision...\n")
     sniffer_fp = tempfile.NamedTemporaryFile('w+t')
     sniffer = startSniffer(host_ip, port, sniffer_fp.name)
@@ -133,9 +133,9 @@ db.addMeta(meta)
 time.sleep(0.5) # ensure sniffer is fully ready and our process is migrated
 
 sid = 0
-sample_types = [('train',int(num_samples*2/7)),
-                ('train_null',int(num_samples*3/7)+1),
-                ('test',int(num_samples*2/7)),
+sample_types = [('train',int(num_samples*1/5)),
+                ('train_null',int(num_samples*2/5)),
+                ('test',int(num_samples*2/5)),
                 ('test_null',0)]
 report_interval = 20
 start = time.time()

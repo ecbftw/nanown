@@ -378,6 +378,9 @@ def analyzeProbes(db):
         db.conn.commit()
         pcursor.execute("INSERT INTO analysis SELECT id,probe_id,suspect,packet_rtt,tsval_rtt FROM trim_analysis WHERE sent_trimmed=? AND rcvd_trimmed=?",
                         (best_strim,best_rtrim))
+
+    #pcursor.execute("DELETE FROM trim_analysis")
+    db.conn.commit()
     
     return count
 
