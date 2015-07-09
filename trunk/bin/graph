@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import time
+import random
+import tempfile
+import argparse
+import socket
+import json
+
+import matplotlib.mlab as mlab
+import matplotlib.pyplot as plt
+
+
+VERSION = "{DEVELOPMENT}"
+if VERSION == "{DEVELOPMENT}":
+    script_dir = '.'
+    try:
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+    except:
+        try:
+            script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        except:
+            pass
+    sys.path.append("%s/../lib" % script_dir)
+
+from nanownlib import *
+from nanownlib.stats import *
+import nanownlib.storage
+
+
+parser = argparse.ArgumentParser(
+    description="")
+parser.add_argument('db_file', default=None,
+                    help='')
+options = parser.parse_args()
+db = nanownlib.storage.db(options.db_file)
+
+
+def differences(db, unusual_case, column='packet_rtt'):
+    cursor = db.conn.cursor()
+    query="""
+      SELECT %(column)s-(SELECT avg(%(column)s) FROM probes,analysis
+                         WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type in ('train','test') AND sample=u.sample)
+      FROM (SELECT probes.sample,%(column)s FROM probes,analysis 
+                         WHERE analysis.probe_id=probes.id AND probes.test_case =:unusual_case AND probes.type in ('train','test')) u
+      """ % {"column":column}
+    params = {"unusual_case":unusual_case}
+    cursor.execute(query, params)
+    for row in cursor:
+        yield row[0]
+
+
+def timeSeries(db, probe_type, unusual_case):
+    cursor = db.conn.cursor()
+    query="""
+      SELECT time_of_day,packet_rtt AS uc,(SELECT avg(packet_rtt) FROM probes,analysis
+                                           WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type=:probe_type AND sample=u.sample) AS oc
+      FROM (SELECT time_of_day,probes.sample,packet_rtt FROM probes,analysis 
+                                           WHERE analysis.probe_id=probes.id AND probes.test_case =:unusual_case AND probes.type=:probe_type) u
+    """
+    
+    params = {"probe_type":probe_type,"unusual_case":unusual_case}
+    cursor.execute(query, params)
+    for row in cursor:
+        yield {'time_of_day':row['time_of_day'],unusual_case:row['uc'],'other_cases':row['oc']}
+#samples,derived,null_derived = parse_data(input1)
+
+#trust = trustValues(derived, sum)
+#weights = linearWeights(derived, trust, 0.25)
+#print('(test): %f' % weightedMean(derived,weights))
+
+diffs = list(differences(db, 'long'))
+reported_diffs = list(differences(db, 'long', 'reported'))
+#shorts = [s['packet_rtt'] for s in samples.values() if s['test_case']=='short']
+#longs = [s['packet_rtt'] for s in samples.values() if s['test_case']=='long']
+
+short_overtime = [(sample['time_of_day'],sample['short']) for sample in timeSeries(db,'train','short')]
+long_overtime = [(sample['time_of_day'],sample['long']) for sample in timeSeries(db,'train','long')]
+diff_overtime = [(sample['time_of_day'],sample['long']-sample['other_cases']) for sample in timeSeries(db,'train','long')]
+short_overtime.sort()
+long_overtime.sort()
+diff_overtime.sort()
+
+print('packet_rtt diff median: %f' % statistics.median(diffs))
+print('packet_rtt diff midhinge: %f' % midhinge(diffs))
+print('packet_rtt diff trimean: %f' % trimean(diffs))
+print('packet_rtt diff MAD: %f' % mad(diffs))
+print('reported diff trimean: %f' % trimean(reported_diffs))
+print('reported diff MAD: %f' % mad(reported_diffs))
+
+
+#all_data = longs+shorts
+#all_data.sort()
+#cut_off_low = all_data[0]
+#cut_off_high = all_data[int(len(all_data)*0.997)]
+
+
+plt.clf()
+plt.title("Packet RTT over time")
+plt.xlabel('Time of Day')
+plt.ylabel('RTT')
+s = plt.scatter([t for t,rtt in short_overtime], [rtt for t,rtt in short_overtime], s=1, color='red', alpha=0.6)
+l = plt.scatter([t for t,rtt in long_overtime], [rtt for t,rtt in long_overtime], s=1, color='blue', alpha=0.6)
+d = plt.scatter([t for t,rtt in diff_overtime], [rtt for t,rtt in diff_overtime], s=1, color='purple', alpha=0.6)
+plt.legend((s,l,d), ('short','long','difference'), scatterpoints=1)
+#plt.savefig('paper/figures/comcast-powerboost1.png')
+plt.show()
+
+short_overtime,long_overtime,diff_overtime = None,None,None
+
+
+num_bins = 300
+reported_diffs.sort()
+cut_off_low = reported_diffs[int(len(diffs)*0.003)]
+cut_off_high = reported_diffs[int(len(diffs)*0.997)]
+
+plt.clf()
+# the histogram of the data
+n, bins, patches = plt.hist(reported_diffs, num_bins, normed=1, color='black', histtype='step', alpha=0.8,
+                            range=(cut_off_low,cut_off_high))
+plt.xlabel('RTT Difference')
+plt.ylabel('Probability')
+plt.title(r'Histogram - distribution of differences')
+
+# Tweak spacing to prevent clipping of ylabel
+plt.subplots_adjust(left=0.15)
+#plt.legend()
+plt.show()
+#plt.savefig('paper/graphs/dists-vs-dist-of-diffs2.svg')
+
+
+
+
+num_bins = 300
+diffs.sort()
+cut_off_low = diffs[int(len(diffs)*0.003)]
+cut_off_high = diffs[int(len(diffs)*0.997)]
+
+plt.clf()
+# the histogram of the data
+n, bins, patches = plt.hist(diffs, num_bins, normed=1, color='purple', histtype='step', alpha=0.8,
+                            range=(cut_off_low,cut_off_high))
+plt.xlabel('RTT Difference')
+plt.ylabel('Probability')
+plt.title(r'Histogram - distribution of differences')
+
+# Tweak spacing to prevent clipping of ylabel
+plt.subplots_adjust(left=0.15)
+#plt.legend()
+plt.show()
+#plt.savefig('paper/graphs/dists-vs-dist-of-diffs2.svg')
+
+sys.exit(0)
+
+
+
+num_bins = 150
+# the histogram of the data
+n, bins, patches = plt.hist((shorts,longs), num_bins, normed=1, label=['short', 'long'], color=['red','blue'], histtype='step', alpha=0.8,
+                            range=(cut_off_low,cut_off_high))
+#n, bins, patches = plt.hist(shorts2+longs2, num_bins, normed=1, facecolor='blue', histtype='step', alpha=0.3)
+# add a 'best fit' line
+#y = mlab.normpdf(bins, mu, sigma)
+#plt.plot(bins, y, 'r--')
+plt.xlabel('packet_rtt')
+plt.ylabel('Probability')
+plt.title(r'Histogram - RTT short and long')
+
+# Tweak spacing to prevent clipping of ylabel
+plt.subplots_adjust(left=0.15)
+plt.legend()
+#plt.show()
+plt.savefig('paper/figures/comcast-powerboost2.svg')
+
+
+
+
+num_trials = 200
+
+
+subsample_sizes = (50,150,300,500,700,1000,2000,3000,5000,7000,10000,15000,20000)
+estimator = functools.partial(boxTest, 0.07, 0.08)
+performance = []
+for subsample_size in subsample_sizes:
+    estimates = bootstrap(derived, subsample_size, num_trials, estimator)
+    performance.append(100.0*len([e for e in estimates if e == 1])/num_trials)
+
+null_performance = []
+for subsample_size in subsample_sizes:
+    null_estimates = bootstrap(null_derived, subsample_size, num_trials, estimator)
+    null_performance.append(100.0*len([e for e in null_estimates if e == 0])/num_trials)
+
+plt.clf()
+plt.title("boxTest bootstrap")
+plt.xlabel('sample size')
+plt.ylabel('performance')
+plt.scatter(subsample_sizes, performance, s=2, color='red', alpha=0.6)
+plt.scatter(subsample_sizes, null_performance, s=2, color='blue', alpha=0.6)
+plt.show()
+
+
+
+subsample_sizes = (50,150,300,400,500,700,1000,2000,3000,4000,5000,7000,10000)
+estimator = diffMedian
+performance = []
+for subsample_size in subsample_sizes:
+    estimates = bootstrap(derived, subsample_size, num_trials, estimator)
+    performance.append(100.0*len([e for e in estimates if e > expected_mean*0.9 and e < expected_mean*1.1])/num_trials)
+
+plt.clf()
+plt.title("diff median bootstrap")
+plt.xlabel('sample size')
+plt.ylabel('performance')
+plt.scatter(subsample_sizes, performance, s=1, color='red', alpha=0.6)
+plt.show()
+
+
+
+
+subsample_sizes = (50,150,300,400,500,700,1000,2000,3000,4000,5000,7000,10000)
+weight_funcs = (linearWeights, prunedWeights)
+for wf in weight_funcs:
+    estimator = functools.partial(estimateMean, hypotenuse, wf, 0.40)
+    performance = []
+    for subsample_size in subsample_sizes:
+        estimates = bootstrap(derived, subsample_size, num_trials, estimator)
+        performance.append(100.0*len([e for e in estimates if e > expected_mean*0.9 and e < expected_mean*1.1])/num_trials)
+
+    plt.clf()
+    plt.title(repr(wf))
+    plt.xlabel('sample size')
+    plt.ylabel('performance')
+    plt.scatter(subsample_sizes, performance, s=1, color='red', alpha=0.6)
+    plt.show()
+
+
+
+num_bins = 300
+# the histogram of the data
+n, bins, patches = plt.hist((tsshorts,tslongs), num_bins, normed=1, label=['short', 'long'], color=['red','blue'], histtype='step', alpha=0.8)
+#n, bins, patches = plt.hist(shorts2+longs2, num_bins, normed=1, facecolor='blue', histtype='step', alpha=0.3)
+# add a 'best fit' line
+#y = mlab.normpdf(bins, mu, sigma)
+#plt.plot(bins, y, 'r--')
+plt.xlabel('packet_rtt')
+plt.ylabel('Probability')
+plt.title(r'Histogram - tsval_rtt short vs long')
+
+# Tweak spacing to prevent clipping of ylabel
+plt.subplots_adjust(left=0.15)
+plt.legend()
+plt.show()
+
+
+
+    
+####
+#trust_methods = [min,max,sum,difference,product]
+trust_methods = [sum,product,hypotenuse]
+colors = ['red','blue','green','purple','orange','black']
+weight_methods = [prunedWeights, linearWeights]
+alphas = [i/100.0 for i in range(0,100,2)]
+
+
+
+
+plt.clf()
+plt.title(r'Trust Method Comparison - Linear')
+plt.xlabel('Alpha')
+plt.ylabel('Mean error')
+paths = []
+for tm in trust_methods:
+    trust = trustValues(derived, tm)
+    series = []
+    for alpha in alphas:
+        weights = linearWeights(derived, trust, alpha)
+        series.append(weightedMean(derived, weights) - expected_mean)
+
+    paths.append(plt.scatter(alphas, series, s=1, color=colors[len(paths)],alpha=0.6))
+
+plt.legend(paths, [repr(tm) for tm in trust_methods], scatterpoints=1)
+plt.show()
+
+
+
+plt.clf()
+plt.title(r'Trust Method Comparison - Pruned')
+plt.xlabel('Alpha')
+plt.ylabel('Mean error')
+paths = []
+for tm in trust_methods:
+    trust = trustValues(derived, tm)
+    series = []
+    for alpha in alphas:
+        weights = prunedWeights(derived, trust, alpha)
+        series.append(weightedMean(derived, weights) - expected_mean)
+
+    paths.append(plt.scatter(alphas, series, s=1, color=colors[len(paths)],alpha=0.6))
+
+plt.legend(paths, [repr(tm) for tm in trust_methods], scatterpoints=1)
+plt.show()
+
+
+sys.exit(0)
+
+plt.clf()
+plt.title(r'Trust Method Comparison - Inverted')
+plt.xlabel('Alpha')
+plt.ylabel('Mean error')
+paths = []
+for tm in trust_methods:
+    trust = trustValues(derived, tm)
+    series = []
+    for alpha in alphas:
+        weights = invertedWeights(derived, trust, alpha)
+        series.append(weightedMean(derived, weights) - expected_mean)
+
+    paths.append(plt.scatter(alphas, series, s=1, color=colors[len(paths)],alpha=0.6))
+
+plt.legend(paths, [repr(tm) for tm in trust_methods], scatterpoints=1)
+plt.show()
+
+
+plt.clf()
+plt.title(r'Trust Method Comparison - Arctangent')
+plt.xlabel('Alpha')
+plt.ylabel('Mean error')
+paths = []
+for tm in trust_methods:
+    trust = trustValues(derived, tm)
+    series = []
+    for alpha in alphas:
+        weights = arctanWeights(derived, trust, alpha)
+        series.append(weightedMean(derived, weights) - expected_mean)
+
+    paths.append(plt.scatter(alphas, series, s=1, color=colors[len(paths)],alpha=0.6))
+
+plt.legend(paths, [repr(tm) for tm in trust_methods], scatterpoints=1)
+plt.show()

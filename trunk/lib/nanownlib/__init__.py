@@ -213,10 +213,10 @@ def removeDuplicatePackets(packets):
     # XXX: Need to review this deduplication algorithm and make sure it is correct
     for p in packets:
         key = (p['sent'],p['tcpseq'],p['tcpack'],p['payload_len'])
-        #if (key not in seen)\
-        #   or p['sent']==1 and (seen[key]['observed'] < p['observed'])\
-        #   or p['sent']==0 and (seen[key]['observed'] > p['observed']):
-        if (key not in seen) or (seen[key]['observed'] > p['observed']):
+        if (key not in seen)\
+           or p['sent']==1 and (seen[key]['observed'] < p['observed'])\
+           or p['sent']==0 and (seen[key]['observed'] > p['observed']):
+            #if (key not in seen) or (seen[key]['observed'] > p['observed']):
             seen[key] = p
     
     if len(seen) < len(packets):
@@ -351,7 +351,7 @@ def analyzeProbes(db):
     import pprint
     pprint.pprint(evaluations)
 
-    delta_margin = 0.1
+    delta_margin = 0.15
     best_strim = 0
     best_rtrim = 0
     good_delta,good_mad = evaluations[(0,0)]
@@ -438,7 +438,9 @@ def findUnusualTestCase(db):
     cursor.execute("SELECT packet_rtt FROM probes,analysis WHERE probes.id=analysis.probe_id AND probes.type in ('train','test') AND probes.test_case<>?", (tc,))
     remaining_tm = trimean([row['packet_rtt'] for row in cursor])
 
-    return (tc, tm_map[tc]-remaining_tm)
+    ret_val = (tc, tm_map[tc]-remaining_tm)
+    print("unusual_case: %s, delta: %f" % ret_val)
+    return ret_val
 
 
 def reportProgress(db, sample_types, start_time):

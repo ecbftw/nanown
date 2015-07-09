@@ -226,6 +226,40 @@ def subsample(db, probe_type, subsample_size=None):
             continue
         yield (sid,[dict(r) for r in probes])
 
+
+def subseries(db, probe_type, unusual_case, size=None, offset=None, field='packet_rtt'):
+    cursor = db.conn.cursor()
+    cursor.execute("SELECT max(c) FROM (SELECT count(sample) c FROM probes WHERE type=? GROUP BY test_case)", (probe_type,))
+    population_size = cursor.fetchone()[0]
+
+    if size == None or size > population_size:
+        size = population_size
+    if offset == None or offset >= population_size or offset < 0:
+        offset = numpy.random.random_integers(0,population_size-1)
+
+    query="""
+      SELECT %(field)s AS unusual_case,
+             (SELECT avg(%(field)s) FROM probes,analysis
+              WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type=:probe_type AND sample=u.sample) AS other_cases
+      FROM   (SELECT probes.sample,%(field)s FROM probes,analysis 
+              WHERE analysis.probe_id=probes.id AND probes.test_case =:unusual_case AND probes.type=:probe_type) u
+      LIMIT :size OFFSET :offset
+    """ % {"field":field}
+    
+    params = {"probe_type":probe_type, "unusual_case":unusual_case, "offset":offset, "size":size}
+    cursor.execute(query, params)
+    for row in cursor:
+        size -= 1
+        yield dict(row)
+
+    if size > 0:
+        params['offset'] = 0
+        params['size'] = size
+        cursor.execute(query, params)
+        for row in cursor:
+            yield dict(row)
+    
+
 # if test_cases=None, include all of them.  Otherwise, include only the specified test cases.
 def samples2Distributions(samples, field, test_cases=None):
     ret_val = {}
@@ -265,6 +299,14 @@ def bootstrap2(estimator, db, probe_type, subsample_size, num_trials):
     ret_val = []
     for t in range(num_trials):
         ret_val.append(estimator(subsample(db, probe_type, subsample_size)))
+
+    return ret_val
+
+
+def bootstrap3(estimator, db, probe_type, unusual_case, subseries_size, num_trials):
+    ret_val = []
+    for t in range(num_trials):
+        ret_val.append(estimator(subseries(db, probe_type, unusual_case, subseries_size)))
 
     return ret_val
 
@@ -328,8 +370,8 @@ def multiBoxTest(params, unusual_case, greater, samples):
 
 # Returns 1 if unusual_case is unusual in the expected direction
 #         0 otherwise
-def midhingeTest(params, unusual_case, greater, samples):
-    diffs = list(samples2MeanDiffs(samples, 'packet_rtt', unusual_case))
+def midhingeTest(params, greater, samples):
+    diffs = [s['unusual_case']-s['other_cases'] for s in samples]
 
     mh = midhinge(diffs, params['distance'])
     if greater:

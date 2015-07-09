@@ -289,12 +289,12 @@ def trainBoxTest2(db, unusual_case, greater, subsample_size):
             'false_negatives':performance[0][2]}
 
 
-def trainMidhinge(db, unusual_case, greater, subsample_size):
+def trainMidhinge(db, unusual_case, greater, subseries_size):
 
     def trainAux(distance, threshold, num_trials):
-        estimator = functools.partial(midhingeTest, {'distance':distance,'threshold':threshold}, unusual_case, greater)
-        estimates = bootstrap2(estimator, db, 'train', subsample_size, num_trials)
-        null_estimates = bootstrap2(estimator, db, 'train_null', subsample_size, num_trials)
+        estimator = functools.partial(midhingeTest, {'distance':distance,'threshold':threshold}, greater)
+        estimates = bootstrap3(estimator, db, 'train', unusual_case, subseries_size, num_trials)
+        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, subseries_size, num_trials)
 
         bad_estimates = len([e for e in estimates if e != 1])
         bad_null_estimates = len([e for e in null_estimates if e != 0])
@@ -305,14 +305,14 @@ def trainMidhinge(db, unusual_case, greater, subsample_size):
 
     #determine expected delta based on differences
     start = time.time()
-    mean_diffs = list(samples2MeanDiffs(subsample(db, 'train'), 'packet_rtt', unusual_case))
+    mean_diffs = [s['unusual_case']-s['other_cases'] for s in subseries(db, 'train', unusual_case)]
     threshold = trimean(mean_diffs)/2.0
     print("initial threshold:", threshold)
     print("median threshold:", statistics.median(mean_diffs)/2.0)
     print("midhinge threshold:", midhinge(mean_diffs)/2.0)
     print("trimean threshold:", trimean(mean_diffs)/2.0)
     
-    mean_diffs = list(samples2MeanDiffs(subsample(db, 'train_null'), 'packet_rtt', unusual_case))
+    mean_diffs = [s['unusual_case']-s['other_cases'] for s in subseries(db, 'train_null', unusual_case)]
     print(len(mean_diffs))
     print("null mean:", statistics.mean(mean_diffs))
     print("null median:", statistics.median(mean_diffs))
@@ -322,9 +322,9 @@ def trainMidhinge(db, unusual_case, greater, subsample_size):
 
     
     start = time.time()
-    wt = WorkerThreads(1, trainAux)
+    wt = WorkerThreads(2, trainAux)
     
-    num_trials = 200
+    num_trials = 20
     performance = []
     #for distance in range(1,46,4):
     for distance in range(25,46,4):
@@ -334,6 +334,11 @@ def trainMidhinge(db, unusual_case, greater, subsample_size):
         job_id,errors = wt.resultq.get()
         fp,fn = errors
         performance.append(((fp+fn)/2.0, job_id, fn, fp))
+    #for distance in range(25,46,4):
+    #    job_id = distance
+    #    fp,fn = trainAux(distance, threshold, num_trials)
+    #    performance.append(((fp+fn)/2.0, job_id, fn, fp))
+    
     performance.sort()
     pprint.pprint(performance)
     print(time.time()-start)
@@ -341,7 +346,7 @@ def trainMidhinge(db, unusual_case, greater, subsample_size):
     print("good_distance:",good_distance)
 
     
-    num_trials = 200
+    num_trials = 20
     start = time.time()
     performance = []
     for t in range(80,125,5):
@@ -358,7 +363,7 @@ def trainMidhinge(db, unusual_case, greater, subsample_size):
     print("good_threshold:", good_threshold)
 
     
-    num_trials = 200
+    num_trials = 20
     start = time.time()
     performance = []
     for d in range(-4,5):
@@ -373,8 +378,8 @@ def trainMidhinge(db, unusual_case, greater, subsample_size):
     print(time.time()-start)
     best_distance = performance[0][1]
     print("best_distance:",best_distance)
-
-    num_trials = 200
+    
+    num_trials = 20
     start = time.time()
     performance = []
     for t in range(95,106):
@@ -393,7 +398,7 @@ def trainMidhinge(db, unusual_case, greater, subsample_size):
     params = json.dumps({'distance':best_distance,'threshold':best_threshold})
     return {'algorithm':"midhinge",
             'params':params,
-            'sample_size':subsample_size,
+            'sample_size':subseries_size,
             'num_trials':num_trials,
             'trial_type':"train",
             'false_positives':performance[0][3],
@@ -420,12 +425,17 @@ print("unusual_diff:", unusual_diff)
 end = time.time()
 print(":", end-start)
 
+import cProfile
+
 start = time.time()
-results = trainMidhinge(db, unusual_case, greater, 6000)
-db.addClassifierResults(results)
+#cProfile.run('results = trainMidhinge(db, unusual_case, greater, 100)')
+results = trainMidhinge(db, unusual_case, greater, 100)
+#db.addClassifierResults(results)
 print("midhinge result:", results)
 end = time.time()
 print(":", end-start)
+
+sys.exit(0)
 
 start = time.time()
 results = trainBoxTest2(db, unusual_case, greater, 6000)
