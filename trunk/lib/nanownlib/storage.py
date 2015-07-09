@@ -6,6 +6,8 @@ import uuid
 import threading
 import sqlite3
 
+import numpy
+
 def _newid():
     return uuid.uuid4().hex
 
@@ -14,6 +16,7 @@ class db(threading.local):
     conn = None
     cursor = None
     _population_sizes = None
+    _population_cache = None
     
     def __init__(self, path):
         exists = os.path.exists(path)
@@ -21,6 +24,7 @@ class db(threading.local):
         self.conn.execute("PRAGMA foreign_keys = ON;")
         self.conn.row_factory = sqlite3.Row
         self._population_sizes = {}
+        self._population_cache = {}
         
         if not exists:
             self.conn.execute(
@@ -88,6 +92,7 @@ class db(threading.local):
             self.conn.commit()
             self.conn.close()
 
+    
     def populationSize(self, probe_type):
         if probe_type in self._population_sizes:
             return self._population_sizes[probe_type]
@@ -100,6 +105,40 @@ class db(threading.local):
         except Exception as e:
             print(e)
             return 0
+
+
+    def subseries(self, probe_type, unusual_case, size=None, offset=None, field='packet_rtt'):
+        if (probe_type,unusual_case,field) not in self._population_cache:
+            query="""
+            SELECT %(field)s AS unusual_case,
+                   (SELECT avg(%(field)s) FROM probes,analysis
+                    WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type=:probe_type AND sample=u.sample) AS other_cases
+            FROM   (SELECT probes.sample,%(field)s FROM probes,analysis 
+                    WHERE analysis.probe_id=probes.id AND probes.test_case =:unusual_case AND probes.type=:probe_type) u
+            """ % {"field":field}
+    
+            params = {"probe_type":probe_type, "unusual_case":unusual_case}
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            self._population_cache[(probe_type,unusual_case,field)] = [dict(row) for row in cursor.fetchall()]
+
+        population = self._population_cache[(probe_type,unusual_case,field)]
+
+        if size == None or size > len(population):
+            size = len(population)
+        if offset == None or offset >= len(population) or offset < 0:
+            offset = numpy.random.random_integers(0,len(population)-1)
+
+        ret_val = population[offset:offset+size]
+        if len(ret_val) < size:
+            ret_val += population[0:size-len(ret_val)]
+        
+        return ret_val
+
+    
+    def clearCache(self):
+        self._population_cache = {}
+
         
     def _insert(self, table, row):
         rid = _newid()

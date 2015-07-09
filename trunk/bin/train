@@ -81,111 +81,13 @@ class WorkerThreads(object):
             w.join()
 
             
-def trainBoxTest(db, test_cases, longest, subsample_size):
+
+def trainBoxTest(db, unusual_case, greater, subseries_size):
 
     def trainAux(low,high,num_trials):
-        estimator = functools.partial(boxTest, {'low':low, 'high':high})
-        estimates = bootstrap(estimator, db, 'train', test_cases, subsample_size, num_trials)
-        null_estimates = bootstrap(estimator, db, 'train_null', test_cases, subsample_size, num_trials)
-
-        #XXX: need to have a configurable policy on what we're looking for.
-        #     which is longest or which is shortest?
-        bad_estimates = len([e for e in estimates if e != longest])
-        bad_null_estimates = len([e for e in null_estimates if e != None])
-        
-        false_negatives = 100.0*bad_estimates/num_trials
-        false_positives = 100.0*bad_null_estimates/num_trials
-        return false_positives,false_negatives
-
-    start = time.time()
-    wt = WorkerThreads(2, trainAux)
-    
-    width = 2.0
-    performance = []
-    percentiles = list(range(0,50,2))
-    for low in percentiles:
-        wt.addJob(low, (low,low+width,200))
-    wt.wait()
-    while not wt.resultq.empty():
-        job_id,errors = wt.resultq.get()
-        fp,fn = errors
-        performance.append(((fp+fn)/2.0, job_id, fn, fp))
-    performance.sort()
-    pprint.pprint(performance)
-    print(time.time()-start)
-    
-    lows = [p[1] for p in performance[0:5]]
-    widths = [w/10.0 for w in range(0,105,5)]
-    performance = []
-    for width in widths:
-        false_positives = []
-        false_negatives = []
-        for low in lows:
-            wt.addJob(low,(low,low+width,150))
-        wt.wait()
-        while not wt.resultq.empty():
-            job_id,errors = wt.resultq.get()
-            fp,fn = errors
-            false_negatives.append(fn)
-            false_positives.append(fp)
-
-        #print(width, false_negatives)
-        #print(width, false_positives)
-        performance.append(((statistics.mean(false_positives)+statistics.mean(false_negatives))/2.0,
-                            width, statistics.mean(false_negatives), statistics.mean(false_positives)))
-    performance.sort()
-    pprint.pprint(performance)
-    good_width = performance[0][1]
-    print("good_width:",good_width)
-
-
-    lc = {}
-    for low in lows:
-        if low-1 > 0:
-            lc[low-1] = None
-        lc[low] = None
-        lc[low+1] = None
-    lows = lc.keys()
-    
-    performance = []
-    for low in lows:
-        wt.addJob(low, (low,low+good_width,300))
-    wt.wait()
-    while not wt.resultq.empty():
-        job_id,errors = wt.resultq.get()
-        fp,fn = errors
-        performance.append(((fp+fn)/2.0, job_id, fn, fp))
-    performance.sort()
-    pprint.pprint(performance)
-    best_low = performance[0][1]
-    print("best_low:", best_low)
-
-    
-    widths = [good_width-0.4,good_width-0.3,good_width-0.2,good_width-0.1,
-              good_width,good_width+0.1,good_width+0.2,good_width+0.3,good_width+0.4]
-    performance = []
-    for width in widths:
-        wt.addJob(width, (best_low,best_low+width,200))
-    wt.wait()
-    while not wt.resultq.empty():
-        job_id,errors = wt.resultq.get()
-        fp,fn = errors
-        performance.append(((fp+fn)/2.0, job_id, fn, fp))
-    performance.sort()
-    pprint.pprint(performance)
-    best_width=performance[0][1]
-    print("best_width:",best_width)
-    print("final_performance:", performance[0][0])
-
-    return {"low":best_low,"high":best_low+good_width}
-
-
-def trainBoxTest2(db, unusual_case, greater, subsample_size):
-
-    def trainAux(low,high,num_trials):
-        estimator = functools.partial(multiBoxTest, {'low':low, 'high':high}, unusual_case, greater)
-        estimates = bootstrap2(estimator, db, 'train', subsample_size, num_trials)
-        null_estimates = bootstrap2(estimator, db, 'train_null', subsample_size, num_trials)
+        estimator = functools.partial(multiBoxTest, {'low':low, 'high':high}, greater)
+        estimates = bootstrap3(estimator, db, 'train', unusual_case, subseries_size, num_trials)
+        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, subseries_size, num_trials)
 
         bad_estimates = len([e for e in estimates if e != 1])
         bad_null_estimates = len([e for e in null_estimates if e != 0])
@@ -198,10 +100,9 @@ def trainBoxTest2(db, unusual_case, greater, subsample_size):
     wt = WorkerThreads(2, trainAux)
     
     num_trials = 200
-    width = 2.0
+    width = 1.0
     performance = []
-    percentiles = list(range(0,50,2))
-    for low in percentiles:
+    for low in range(0,50):
         wt.addJob(low, (low,low+width,num_trials))
     wt.wait()
     while not wt.resultq.empty():
@@ -212,9 +113,9 @@ def trainBoxTest2(db, unusual_case, greater, subsample_size):
     pprint.pprint(performance)
     print(time.time()-start)
     
-    num_trials = 150
+    num_trials = 200
     lows = [p[1] for p in performance[0:5]]
-    widths = [w/10.0 for w in range(0,105,5)]
+    widths = [w/10.0 for w in range(5,65,5)]
     performance = []
     for width in widths:
         false_positives = []
@@ -230,7 +131,9 @@ def trainBoxTest2(db, unusual_case, greater, subsample_size):
 
         #print(width, false_negatives)
         #print(width, false_positives)
-        performance.append(((statistics.mean(false_positives)+statistics.mean(false_negatives))/2.0,
+        #performance.append(((statistics.mean(false_positives)+statistics.mean(false_negatives))/2.0,
+        #                    width, statistics.mean(false_negatives), statistics.mean(false_positives)))
+        performance.append((abs(statistics.mean(false_positives)-statistics.mean(false_negatives)),
                             width, statistics.mean(false_negatives), statistics.mean(false_positives)))
     performance.sort()
     pprint.pprint(performance)
@@ -238,17 +141,7 @@ def trainBoxTest2(db, unusual_case, greater, subsample_size):
     print("good_width:",good_width)
 
 
-    lc = {}
-    for low in lows:
-        if low-1 >= 0:
-            lc[low-1] = None
-        lc[low] = None
-        lc[low+1] = None
-    lows = lc.keys()
-    print("candidate lows:")
-    pprint.pprint(lows)
-    
-    num_trials = 300
+    num_trials = 500
     performance = []
     for low in lows:
         wt.addJob(low, (low,low+good_width,num_trials))
@@ -262,9 +155,9 @@ def trainBoxTest2(db, unusual_case, greater, subsample_size):
     best_low = performance[0][1]
     print("best_low:", best_low)
 
-    num_trials = 200
-    widths = [good_width-0.4,good_width-0.3,good_width-0.2,good_width-0.1,
-              good_width,good_width+0.1,good_width+0.2,good_width+0.3,good_width+0.4]
+    
+    num_trials = 500
+    widths = [good_width+(x/10.0) for x in range(-6,7) if good_width+(x/10.0) > 0.0]
     performance = []
     for width in widths:
         wt.addJob(width, (best_low,best_low+width,num_trials))
@@ -279,10 +172,10 @@ def trainBoxTest2(db, unusual_case, greater, subsample_size):
     print("best_width:",best_width)
     print("final_performance:", performance[0][0])
     
-    params = json.dumps({"low":best_low,"high":best_low+good_width})
+    params = json.dumps({"low":best_low,"high":best_low+best_width})
     return {'algorithm':"boxtest",
             'params':params,
-            'sample_size':subsample_size,
+            'sample_size':subseries_size,
             'num_trials':num_trials,
             'trial_type':"train",
             'false_positives':performance[0][3],
@@ -304,52 +197,31 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
         return false_positives,false_negatives
 
     #determine expected delta based on differences
-    start = time.time()
-    mean_diffs = [s['unusual_case']-s['other_cases'] for s in subseries(db, 'train', unusual_case)]
+    mean_diffs = [s['unusual_case']-s['other_cases'] for s in db.subseries('train', unusual_case)]
     threshold = trimean(mean_diffs)/2.0
-    print("initial threshold:", threshold)
-    print("median threshold:", statistics.median(mean_diffs)/2.0)
-    print("midhinge threshold:", midhinge(mean_diffs)/2.0)
-    print("trimean threshold:", trimean(mean_diffs)/2.0)
+    print("init_threshold:", threshold)
     
-    mean_diffs = [s['unusual_case']-s['other_cases'] for s in subseries(db, 'train_null', unusual_case)]
-    print(len(mean_diffs))
-    print("null mean:", statistics.mean(mean_diffs))
-    print("null median:", statistics.median(mean_diffs))
-    print("null midhinge:", midhinge(mean_diffs))
-    print("null trimean:", trimean(mean_diffs))
-    print(time.time()-start)
-
+    wt = WorkerThreads(2, trainAux)
     
-    start = time.time()
-    wt = WorkerThreads(4, trainAux)
-    
-    num_trials = 20
+    num_trials = 500
     performance = []
-    #for distance in range(1,46,4):
-    for distance in range(25,46,4):
+    for distance in range(1,50):
         wt.addJob(distance, (distance,threshold,num_trials))
     wt.wait()
     while not wt.resultq.empty():
         job_id,errors = wt.resultq.get()
         fp,fn = errors
         performance.append(((fp+fn)/2.0, job_id, fn, fp))
-    #for distance in range(25,46,4):
-    #    job_id = distance
-    #    fp,fn = trainAux(distance, threshold, num_trials)
-    #    performance.append(((fp+fn)/2.0, job_id, fn, fp))
     
     performance.sort()
-    pprint.pprint(performance)
-    print(time.time()-start)
+    #pprint.pprint(performance)
     good_distance = performance[0][1]
     print("good_distance:",good_distance)
 
     
-    num_trials = 20
-    start = time.time()
+    num_trials = 500
     performance = []
-    for t in range(80,125,5):
+    for t in range(50,154,4):
         wt.addJob(threshold*(t/100.0), (good_distance,threshold*(t/100.0),num_trials))
     wt.wait()
     while not wt.resultq.empty():
@@ -357,30 +229,27 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
         fp,fn = errors
         performance.append(((fp+fn)/2.0, job_id, fn, fp))
     performance.sort()
-    pprint.pprint(performance)
-    print(time.time()-start)
+    #pprint.pprint(performance)
     good_threshold = performance[0][1]
     print("good_threshold:", good_threshold)
 
     
-    num_trials = 20
-    start = time.time()
+    num_trials = 500
     performance = []
-    for d in range(-4,5):
-        wt.addJob(good_distance+d, (good_distance+d,good_threshold,num_trials))
+    for d in [good_distance+s for s in range(-4,5) if good_distance+s > -1]:
+        wt.addJob(d, (d,good_threshold,num_trials))
     wt.wait()
     while not wt.resultq.empty():
         job_id,errors = wt.resultq.get()
         fp,fn = errors
         performance.append(((fp+fn)/2.0, job_id, fn, fp))
     performance.sort()
-    pprint.pprint(performance)
-    print(time.time()-start)
+    #pprint.pprint(performance)
     best_distance = performance[0][1]
     print("best_distance:",best_distance)
+
     
-    num_trials = 20
-    start = time.time()
+    num_trials = 500
     performance = []
     for t in range(95,106):
         wt.addJob(good_threshold*(t/100.0), (best_distance,good_threshold*(t/100.0),num_trials))
@@ -390,8 +259,7 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
         fp,fn = errors
         performance.append(((fp+fn)/2.0, job_id, fn, fp))
     performance.sort()
-    pprint.pprint(performance)
-    print(time.time()-start)
+    #pprint.pprint(performance)
     best_threshold = performance[0][1]
     print("best_threshold:", best_threshold)
 
@@ -427,26 +295,23 @@ print(":", end-start)
 
 import cProfile
 
-start = time.time()
-cProfile.run('results = trainMidhinge(db, unusual_case, greater, 100)')
-#results = trainMidhinge(db, unusual_case, greater, 100)
-#db.addClassifierResults(results)
-print("midhinge result:", results)
-end = time.time()
-print(":", end-start)
+
+
+
+for size in (500,1000,2000,4000,5000,6000):
+    start = time.time()
+    #cProfile.run('results = trainMidhinge(db, unusual_case, greater, 100)')
+    results = trainMidhinge(db, unusual_case, greater, size)
+    #db.addClassifierResults(results)
+    print("midhinge result:")
+    pprint.pprint(results)
+    print(":", time.time()-start)
 
 sys.exit(0)
 
 start = time.time()
-results = trainBoxTest2(db, unusual_case, greater, 6000)
-db.addClassifierResults(results)
-print("multi box test result:", results)
-end = time.time()
-print(":", end-start)
-
-#start = time.time()
-#print("box test params:", trainBoxTest(db, test_cases, 'long', 100))
-#end = time.time()
-#print(":", end-start)
-
-
+results = trainBoxTest(db, unusual_case, greater, 6000)
+#db.addClassifierResults(results)
+print("multi box test result:")
+pprint.pprint(results)
+print(":", time.time()-start)

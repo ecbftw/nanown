@@ -310,7 +310,7 @@ def bootstrap2(estimator, db, probe_type, subsample_size, num_trials):
 def bootstrap3(estimator, db, probe_type, unusual_case, subseries_size, num_trials):
     ret_val = []
     for t in range(num_trials):
-        ret_val.append(estimator(subseries(db, probe_type, unusual_case, subseries_size)))
+        ret_val.append(estimator(db.subseries(probe_type, unusual_case, subseries_size)))
 
     return ret_val
 
@@ -343,16 +343,10 @@ def boxTest(params, test_cases, samples):
 # Returns 1 if unusual_case is unusual in the expected direction
 #         0 if it isn't unusual
 #        -1 if it is unusual in the wrong direction
-def multiBoxTest(params, unusual_case, greater, samples):
-    #XXX: packet_rtt field from params
-    dists = samples2Distributions(samples, 'packet_rtt')
+def multiBoxTest(params, greater, samples):
+    uc = [s['unusual_case'] for s in samples]
+    rest = [s['other_cases'] for s in samples]
     
-    uc = dists[unusual_case]
-    rest = []
-    for tc,d in dists.items():
-        if tc != unusual_case:
-            rest.extend(d)
-
     uc_high = numpy.percentile(uc, params['high'])
     rest_low = numpy.percentile(rest, params['low'])
     if uc_high < rest_low:
@@ -378,6 +372,7 @@ def midhingeTest(params, greater, samples):
     diffs = [s['unusual_case']-s['other_cases'] for s in samples]
 
     mh = midhinge(diffs, params['distance'])
+    #mh = trimean(diffs, params['distance'])
     if greater:
         if mh > params['threshold']:
             return 1
