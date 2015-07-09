@@ -322,7 +322,7 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
 
     
     start = time.time()
-    wt = WorkerThreads(2, trainAux)
+    wt = WorkerThreads(4, trainAux)
     
     num_trials = 20
     performance = []
@@ -428,8 +428,8 @@ print(":", end-start)
 import cProfile
 
 start = time.time()
-#cProfile.run('results = trainMidhinge(db, unusual_case, greater, 100)')
-results = trainMidhinge(db, unusual_case, greater, 100)
+cProfile.run('results = trainMidhinge(db, unusual_case, greater, 100)')
+#results = trainMidhinge(db, unusual_case, greater, 100)
 #db.addClassifierResults(results)
 print("midhinge result:", results)
 end = time.time()

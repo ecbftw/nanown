@@ -13,11 +13,14 @@ def _newid():
 class db(threading.local):
     conn = None
     cursor = None
+    _population_sizes = None
+    
     def __init__(self, path):
         exists = os.path.exists(path)
         self.conn = sqlite3.connect(path)
         self.conn.execute("PRAGMA foreign_keys = ON;")
         self.conn.row_factory = sqlite3.Row
+        self._population_sizes = {}
         
         if not exists:
             self.conn.execute(
@@ -85,6 +88,19 @@ class db(threading.local):
             self.conn.commit()
             self.conn.close()
 
+    def populationSize(self, probe_type):
+        if probe_type in self._population_sizes:
+            return self._population_sizes[probe_type]
+
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT max(c) FROM (SELECT count(sample) c FROM probes WHERE type=? GROUP BY test_case)", (probe_type,))
+            self._population_sizes[probe_type] = cursor.fetchone()[0]
+            return self._population_sizes[probe_type]
+        except Exception as e:
+            print(e)
+            return 0
+        
     def _insert(self, table, row):
         rid = _newid()
         keys = row.keys()

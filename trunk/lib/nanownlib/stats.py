@@ -228,9 +228,7 @@ def subsample(db, probe_type, subsample_size=None):
 
 
 def subseries(db, probe_type, unusual_case, size=None, offset=None, field='packet_rtt'):
-    cursor = db.conn.cursor()
-    cursor.execute("SELECT max(c) FROM (SELECT count(sample) c FROM probes WHERE type=? GROUP BY test_case)", (probe_type,))
-    population_size = cursor.fetchone()[0]
+    population_size = db.populationSize(probe_type)
 
     if size == None or size > population_size:
         size = population_size
@@ -247,18 +245,24 @@ def subseries(db, probe_type, unusual_case, size=None, offset=None, field='packe
     """ % {"field":field}
     
     params = {"probe_type":probe_type, "unusual_case":unusual_case, "offset":offset, "size":size}
+    cursor = db.conn.cursor()
     cursor.execute(query, params)
-    for row in cursor:
-        size -= 1
-        yield dict(row)
+    ret_val = [dict(row) for row in cursor.fetchall()]
+    #for row in cursor:
+    #    size -= 1
+    #    yield dict(row)
 
+    size -= len(ret_val)
     if size > 0:
         params['offset'] = 0
         params['size'] = size
         cursor.execute(query, params)
-        for row in cursor:
-            yield dict(row)
+        ret_val += [dict(row) for row in cursor.fetchall()]
+        #for row in cursor:
+        #    yield dict(row)
     
+    return ret_val
+
 
 # if test_cases=None, include all of them.  Otherwise, include only the specified test cases.
 def samples2Distributions(samples, field, test_cases=None):
