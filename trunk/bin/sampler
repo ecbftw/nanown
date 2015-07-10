@@ -36,6 +36,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument('-c', dest='cases', type=str, default='{"short":10000,"long":13000}',
                     help='JSON representation of echo timing cases.')
 parser.add_argument('--no-tcpts', action='store_true', help='Disbale TCP timestamp profiling')
+parser.add_argument('--no-control', action='store_true', help='Do not collect separate control data.  Instead, synthesize it from test and train data.')
 parser.add_argument('session_name', default=None,
                     help='Name for the sampler session (used in output filenames)')
 parser.add_argument('sample_count', type=int, default=None,
@@ -132,11 +133,19 @@ db = nanownlib.storage.db(db_file)
 db.addMeta(meta)
 time.sleep(0.5) # ensure sniffer is fully ready and our process is migrated
 
+if options.no_control:
+    num_control = 0
+else:
+    num_control = int(num_samples*2/5)
+
+num_train = int((num_samples-num_control)/3)
+num_test = num_samples-num_train-num_control
+
+sample_types = [('train',num_train),
+                ('train_null',num_control),
+                ('test',num_test)]
+
 sid = 0
-sample_types = [('train',int(num_samples*1/5)),
-                ('train_null',int(num_samples*2/5)),
-                ('test',int(num_samples*2/5)),
-                ('test_null',0)]
 report_interval = 20
 start = time.time()
 next_report = start+report_interval
@@ -181,6 +190,9 @@ associatePackets(sniffer_fp, db)
 sniffer_fp.close()
 end = time.time()
 print("associate time:", end-start)
+
+if options.no_control:
+    print("TODO: implement control synthesizing!")
 
 start = time.time()
 num_probes = analyzeProbes(db)

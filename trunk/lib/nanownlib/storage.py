@@ -129,7 +129,11 @@ class db(threading.local):
         if offset == None or offset >= len(population) or offset < 0:
             offset = numpy.random.random_integers(0,len(population)-1)
 
-        ret_val = population[offset:offset+size]
+        try:
+            ret_val = population[offset:offset+size]
+        except Exception as e:
+            print(e, offset, size)
+            
         if len(ret_val) < size:
             ret_val += population[0:size-len(ret_val)]
         
