@@ -9,6 +9,7 @@ import argparse
 import socket
 import json
 
+import numpy
 import matplotlib.mlab as mlab
 import matplotlib.pyplot as plt
 
@@ -84,11 +85,23 @@ long_overtime.sort()
 diff_overtime.sort()
 
 print('packet_rtt diff median: %f' % statistics.median(diffs))
-print('packet_rtt diff midhinge: %f' % midhinge(diffs))
+print('packet_rtt diff midhinge: %f' % midsummary(diffs))
 print('packet_rtt diff trimean: %f' % trimean(diffs))
+print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
+print('packet_rtt diff ubersummary: %f' % ubersummary(diffs))
 print('packet_rtt diff MAD: %f' % mad(diffs))
 print('reported diff trimean: %f' % trimean(reported_diffs))
+print('reported diff quadsummary: %f' % quadsummary(reported_diffs))
+print('reported diff ubersummary: %f' % ubersummary(reported_diffs))
 print('reported diff MAD: %f' % mad(reported_diffs))
+
+import cProfile
+kresults = kfilter({},diffs)
+#print('packet_rtt diff kfilter: ', numpy.mean(kresults['est']), kresults['var'])
+print('packet_rtt diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+kresults = kfilter({},reported_diffs)
+#print('reported diff kfilter: ', numpy.mean(kresults['est']), kresults['var'][-1])
+print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
 
 
 #all_data = longs+shorts

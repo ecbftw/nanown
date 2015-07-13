@@ -43,6 +43,8 @@ options = parser.parse_args()
 db = nanownlib.storage.db(options.db_file)
 
 start = time.time()
+import cProfile
+#cProfile.run('num_probes = analyzeProbes(db)')
 num_probes = analyzeProbes(db)
 end = time.time()
 print("analyzed %d probes' packets in: %f" % (num_probes, end-start))

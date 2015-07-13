@@ -1,6 +1,7 @@
 
 import sys
 import os
+import functools
 import math
 import statistics
 import gzip
@@ -132,12 +133,50 @@ def arctanWeights2(derived,trust,alpha):
     return weights
 
 
-def midhinge(values, distance=25):
-    return (numpy.percentile(values, 50-distance) + numpy.percentile(values, 50+distance))/2.0
+def midsummary(values, distance=25):
+    #return (numpy.percentile(values, 50-distance) + numpy.percentile(values, 50+distance))/2.0
+    l,h = numpy.percentile(values, (50-distance,50+distance))
+    return (l+h)/2.0
 
 def trimean(values, distance=25):
-    return (midhinge(values, distance) + statistics.median(values))/2
+    return (midsummary(values, distance) + statistics.median(values))/2
 
+def ubersummary(values, distance=25):
+    left2 = 50-distance
+    left1 = left2/2.0
+    left3 = (left2+50)/2.0
+    right2 = 50+distance
+    right3 = (right2+50)/2.0
+    right1 = (right2+100)/2.0
+    l1,l2,l3,r3,r2,r1 = numpy.percentile(values, (left1,left2,left3,right3,right2,right1))
+    #print(left1,left2,left3,50,right3,right2,right1)
+    #print(l1,l2,l3,m,r3,r2,r1)
+    return (l1+l2*4+l3+r3+r2*4+r1)/12.0
+    #return statistics.mean((l1,l2,l3,m,r3,r2,r1))
+
+def quadsummary(values, distance=25):
+    left2 = 50-distance
+    left1 = left2/2.0
+    right2 = 50+distance
+    right1 = (right2+100)/2.0
+    l1,l2,r2,r1 = numpy.percentile(values, (left1,left2,right2,right1))
+    #print(left1,left2,left3,50,right3,right2,right1)
+    #print(l1,l2,l3,m,r3,r2,r1)
+    return (l1+l2+r2+r1)/4.0
+    #return statistics.mean((l1,l2,l3,m,r3,r2,r1))
+
+def quadsummary(values, distance=25):
+    left1 = 50-distance
+    left2 = (left1+50)/2.0
+    right1 = 50+distance
+    right2 = (right1+50)/2.0
+    l1,l2,r2,r1 = numpy.percentile(values, (left1,left2,right2,right1))
+    #print(left1,left2,left3,50,right3,right2,right1)
+    #print(l1,l2,l3,m,r3,r2,r1)
+    return (l1+l2+r2+r1)/4.0
+    #return statistics.mean((l1,l2,l3,m,r3,r2,r1))
+
+    
 def weightedMean(derived, weights):
     normalizer = sum(weights.values())/len(weights)
     return statistics.mean([w*(derived[k]['long']-derived[k]['short'])/normalizer for k,w in weights.items()])
@@ -169,8 +208,8 @@ def estimateMedian(derived):
     return statistics.median([(d['long']-d['short']) for d in derived.values()])
 
 
-def estimateMidhinge(derived):
-    return midhinge([(d['long']-d['short']) for d in derived.values()])
+def estimateMidsummary(derived):
+    return midsummary([(d['long']-d['short']) for d in derived.values()])
 
 
 def estimateTrimean(derived):
@@ -347,16 +386,14 @@ def multiBoxTest(params, greater, samples):
     uc = [s['unusual_case'] for s in samples]
     rest = [s['other_cases'] for s in samples]
     
-    uc_high = numpy.percentile(uc, params['high'])
-    rest_low = numpy.percentile(rest, params['low'])
+    uc_high,uc_low = numpy.percentile(uc, (params['high'],params['low']))
+    rest_high,rest_low = numpy.percentile(rest, (params['high'],params['low']))
     if uc_high < rest_low:
         if greater:
             return -1
         else:
             return 1
 
-    uc_low = numpy.percentile(uc, params['low'])
-    rest_high = numpy.percentile(rest, params['high'])
     if rest_high < uc_low:
         if greater:
             return 1
@@ -368,11 +405,10 @@ def multiBoxTest(params, greater, samples):
 
 # Returns 1 if unusual_case is unusual in the expected direction
 #         0 otherwise
-def midhingeTest(params, greater, samples):
+def summaryTest(f, params, greater, samples):
     diffs = [s['unusual_case']-s['other_cases'] for s in samples]
 
-    mh = midhinge(diffs, params['distance'])
-    #mh = trimean(diffs, params['distance'])
+    mh = f(diffs, params['distance'])
     if greater:
         if mh > params['threshold']:
             return 1
@@ -384,6 +420,10 @@ def midhingeTest(params, greater, samples):
         else:
             return 0
 
+midsummaryTest = functools.partial(summaryTest, midsummary)
+trimeanTest = functools.partial(summaryTest, trimean)
+ubersummaryTest = functools.partial(summaryTest, ubersummary)
+quadsummaryTest = functools.partial(summaryTest, quadsummary)
 
 def rmse(expected, measurements):
     s = sum([(expected-m)**2 for m in measurements])/len(measurements)
@@ -391,3 +431,81 @@ def rmse(expected, measurements):
 
 def nrmse(expected, measurements):
     return rmse(expected, measurements)/(max(measurements)-min(measurements))
+
+
+class KalmanFilter1D:
+    def __init__(self, x0, P, R, Q):
+        self.x = x0
+        self.P = P
+        self.R = R
+        self.Q = Q
+
+    def update(self, z):
+        self.x = (self.P * z + self.x * self.R) / (self.P + self.R)
+        self.P = 1. / (1./self.P + 1./self.R)
+
+    def predict(self, u=0.0):
+        self.x += u
+        self.P += self.Q
+
+
+def kfilter(params, observations):
+    x = numpy.array(observations)
+    movement = 0
+    est = []    
+    var = []
+    kf = KalmanFilter1D(x0 = quadsummary(x), # initial state
+                        #P  = 10000,          # initial variance
+                        P  = 10,          # initial variance
+                        R  = numpy.std(x),   # msensor noise
+                        Q  = 0)              # movement noise
+    for round in range(1):
+        for d in x:
+            kf.predict(movement)
+            kf.update(d)
+            est.append(kf.x)
+            var.append(kf.P)
+
+    return({'est':est, 'var':var})
+
+
+def kalmanTest(params, greater, samples):
+    diffs = [s['unusual_case']-s['other_cases'] for s in samples]
+
+    m = kfilter(params, diffs)['est'][-1]
+    if greater:
+        if m > params['threshold']:
+            return 1
+        else:
+            return 0
+    else:
+        if m < params['threshold']:
+            return 1
+        else:
+            return 0
+
+
+def kalmanTest2(params, greater, samples):
+    diffs = [s['unusual_case']-s['other_cases'] for s in samples]
+
+    estimates = []
+    size = 500
+    for i in range(100):
+        off = random.randrange(0,len(diffs))
+        sub = diffs[off:size]
+        if len(sub) < size:
+            sub += diffs[0:size-len(sub)]
+        estimates.append(kfilter(params, sub)['est'][-1])
+            
+    m = quadsummary(estimates)
+    if greater:
+        if m > params['threshold']:
+            return 1
+        else:
+            return 0
+    else:
+        if m < params['threshold']:
+            return 1
+        else:
+            return 0
+

@@ -25,27 +25,30 @@ if VERSION == "{DEVELOPMENT}":
     sys.path.append("%s/../lib" % script_dir)
 
 from nanownlib import *
-import nanownlib.storage
-from nanownlib.stats import boxTest,multiBoxTest,subsample,bootstrap,bootstrap2,trimean,midhinge,midhingeTest,samples2Distributions,samples2MeanDiffs
+from nanownlib.stats import *
 from nanownlib.parallel import WorkerThreads
+import nanownlib.storage
+
 
 
 parser = argparse.ArgumentParser(
     description="")
 #parser.add_argument('-c', dest='cases', type=str, default='{"short":10000,"long":1010000}',
 #                    help='JSON representation of echo timing cases. Default: {"short":10000,"long":1010000}')
+parser.add_argument('--retrain', action='append', default=[], help='Force a classifier to be retrained.  May be specified multiple times.')
+parser.add_argument('--retest', action='append', default=[], help='Force a classifier to be retested.  May be specified multiple times.')
 parser.add_argument('session_data', default=None,
                     help='Database file storing session information')
 options = parser.parse_args()
 
-            
 
-def trainBoxTest(db, unusual_case, greater, subseries_size):
-
+def trainBoxTest(db, unusual_case, greater, num_observations):
+    db.resetOffsets()
+    
     def trainAux(low,high,num_trials):
         estimator = functools.partial(multiBoxTest, {'low':low, 'high':high}, greater)
-        estimates = bootstrap3(estimator, db, 'train', unusual_case, subseries_size, num_trials)
-        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, subseries_size, num_trials)
+        estimates = bootstrap3(estimator, db, 'train', unusual_case, num_observations, num_trials)
+        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, num_observations, num_trials)
 
         bad_estimates = len([e for e in estimates if e != 1])
         bad_null_estimates = len([e for e in null_estimates if e != 0])
@@ -115,7 +118,7 @@ def trainBoxTest(db, unusual_case, greater, subseries_size):
 
     
     num_trials = 500
-    widths = [good_width+(x/100.0) for x in range(-60,75,5) if good_width+(x/100.0) > 0.0]
+    widths = [good_width+(x/100.0) for x in range(-70,75,5) if good_width+(x/100.0) > 0.0]
     performance = []
     for width in widths:
         wt.addJob(width, (best_low,best_low+width,num_trials))
@@ -123,7 +126,8 @@ def trainBoxTest(db, unusual_case, greater, subseries_size):
     while not wt.resultq.empty():
         job_id,errors = wt.resultq.get()
         fp,fn = errors
-        performance.append(((fp+fn)/2.0, job_id, fn, fp))
+        #performance.append(((fp+fn)/2.0, job_id, fn, fp))
+        performance.append((abs(fp-fn), job_id, fn, fp))
     performance.sort()
     #pprint.pprint(performance)
     best_width=performance[0][1]
@@ -132,21 +136,22 @@ def trainBoxTest(db, unusual_case, greater, subseries_size):
 
     wt.stop()
     params = json.dumps({"low":best_low,"high":best_low+best_width})
-    return {'algorithm':"boxtest",
-            'params':params,
-            'sample_size':subseries_size,
+    return {'trial_type':"train",
+            'num_observations':num_observations,
             'num_trials':num_trials,
-            'trial_type':"train",
+            'params':params,
             'false_positives':performance[0][3],
             'false_negatives':performance[0][2]}
 
 
-def trainMidhinge(db, unusual_case, greater, subseries_size):
-
+def trainSummary(summaryFunc, db, unusual_case, greater, num_observations):
+    db.resetOffsets()
+    stest = functools.partial(summaryTest, summaryFunc)
+    
     def trainAux(distance, threshold, num_trials):
-        estimator = functools.partial(midhingeTest, {'distance':distance,'threshold':threshold}, greater)
-        estimates = bootstrap3(estimator, db, 'train', unusual_case, subseries_size, num_trials)
-        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, subseries_size, num_trials)
+        estimator = functools.partial(stest, {'distance':distance,'threshold':threshold}, greater)
+        estimates = bootstrap3(estimator, db, 'train', unusual_case, num_observations, num_trials)
+        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, num_observations, num_trials)
 
         bad_estimates = len([e for e in estimates if e != 1])
         bad_null_estimates = len([e for e in null_estimates if e != 0])
@@ -157,7 +162,7 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
 
     #determine expected delta based on differences
     mean_diffs = [s['unusual_case']-s['other_cases'] for s in db.subseries('train', unusual_case)]
-    threshold = trimean(mean_diffs)/2.0
+    threshold = summaryFunc(mean_diffs)/2.0
     #print("init_threshold:", threshold)
     
     wt = WorkerThreads(2, trainAux)
@@ -180,13 +185,14 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
     
     num_trials = 500
     performance = []
-    for t in range(50,154,4):
+    for t in range(80,122,2):
         wt.addJob(threshold*(t/100.0), (good_distance,threshold*(t/100.0),num_trials))
     wt.wait()
     while not wt.resultq.empty():
         job_id,errors = wt.resultq.get()
         fp,fn = errors
-        performance.append(((fp+fn)/2.0, job_id, fn, fp))
+        #performance.append(((fp+fn)/2.0, job_id, fn, fp))
+        performance.append((abs(fp-fn), job_id, fn, fp))
     performance.sort()
     #pprint.pprint(performance)
     good_threshold = performance[0][1]
@@ -216,7 +222,8 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
     while not wt.resultq.empty():
         job_id,errors = wt.resultq.get()
         fp,fn = errors
-        performance.append(((fp+fn)/2.0, job_id, fn, fp))
+        #performance.append(((fp+fn)/2.0, job_id, fn, fp))
+        performance.append((abs(fp-fn), job_id, fn, fp))
     performance.sort()
     #pprint.pprint(performance)
     best_threshold = performance[0][1]
@@ -224,39 +231,173 @@ def trainMidhinge(db, unusual_case, greater, subseries_size):
 
     wt.stop()
     params = json.dumps({'distance':best_distance,'threshold':best_threshold})
-    return {'algorithm':"midhinge",
-            'params':params,
-            'sample_size':subseries_size,
+    return {'trial_type':"train",
+            'num_observations':num_observations,
             'num_trials':num_trials,
-            'trial_type':"train",
+            'params':params,
             'false_positives':performance[0][3],
             'false_negatives':performance[0][2]}
 
 
-classifiers = {'boxtest':{'train':trainBoxTest, 'test':multiBoxTest},
-               'midhinge':{'train':trainMidhinge, 'test':midhinge}}
+def trainKalman(db, unusual_case, greater, num_observations):
+    db.resetOffsets()
+
+    def trainAux(params, num_trials):
+        estimator = functools.partial(kalmanTest, params, greater)
+        estimates = bootstrap3(estimator, db, 'train', unusual_case, num_observations, num_trials)
+        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, num_observations, num_trials)
+        
+        bad_estimates = len([e for e in estimates if e != 1])
+        bad_null_estimates = len([e for e in null_estimates if e != 0])
+        
+        false_negatives = 100.0*bad_estimates/num_trials
+        false_positives = 100.0*bad_null_estimates/num_trials
+        return false_positives,false_negatives
+    
+    mean_diffs = [s['unusual_case']-s['other_cases'] for s in db.subseries('train', unusual_case)]
+    good_threshold = kfilter({},mean_diffs)['est'][-1]/2.0
+
+    wt = WorkerThreads(2, trainAux)
+    num_trials = 200
+    performance = []
+    for t in range(90,111):
+        params = {'threshold':good_threshold*(t/100.0)}
+        wt.addJob(good_threshold*(t/100.0), (params,num_trials))
+    wt.wait()
+    while not wt.resultq.empty():
+        job_id,errors = wt.resultq.get()
+        fp,fn = errors
+        #performance.append(((fp+fn)/2.0, job_id, fn, fp))
+        performance.append((abs(fp-fn), job_id, fn, fp))
+    performance.sort()
+    #pprint.pprint(performance)
+    best_threshold = performance[0][1]
+    #print("best_threshold:", best_threshold)
+    params = {'threshold':best_threshold}
+
+    wt.stop()
+    
+    return {'trial_type':"train",
+            'num_observations':num_observations,
+            'num_trials':num_trials,
+            'params':json.dumps(params),
+            'false_positives':performance[0][3],
+            'false_negatives':performance[0][2]}
+
+    
+    #determine expected delta based on differences
+classifiers = {'boxtest':{'train':trainBoxTest, 'test':multiBoxTest, 'train_results':[]},
+               'midsummary':{'train':functools.partial(trainSummary, midsummary), 'test':midsummaryTest, 'train_results':[]},
+               #'ubersummary':{'train':functools.partial(trainSummary, ubersummary), 'test':ubersummaryTest, 'train_results':[]},
+               'quadsummary':{'train':functools.partial(trainSummary, quadsummary), 'test':quadsummaryTest, 'train_results':[]},
+               'kalman':{'train':trainKalman, 'test':kalmanTest, 'train_results':[]},
+               #'_trimean':{'train':None, 'test':trimeanTest, 'train_results':[]},
+              }
 
 
 db = nanownlib.storage.db(options.session_data)
 
 import cProfile
 
-def trainClassifier(db, unusual_case, greater, trainer):
+def trainClassifier(db, unusual_case, greater, classifier, retrain=False):
+    if retrain:
+        print("Dropping stored training results...")
+        db.deleteClassifierResults(classifier, 'train')
+    
+    trainer = classifiers[classifier]['train']
     threshold = 5.0 # in percent
-    size = 4000
+    num_obs = 1000
+    max_obs = int(db.populationSize('train')/5)
     result = None
-    while size < db.populationSize('train')/5:
-        size = min(size*2, int(db.populationSize('train')/5))
-        result = trainer(db,unusual_case,greater,size)
+    while num_obs < max_obs:
+        num_obs = min(int(num_obs*1.5), max_obs)
+        result = db.fetchClassifierResult(classifier, 'train', num_obs)
+        if result != None:
+            train_time = "(stored)"
+        else:
+            start = time.time()
+            result = trainer(db,unusual_case,greater,num_obs)
+            result['classifier'] = classifier
+            train_time = "%f" % (time.time()-start)
+            
         error = statistics.mean([result['false_positives'],result['false_negatives']])
-        print("subseries size: %d | error: %f | false_positives: %f | false_negatives: %f"
-              % (size,error,result['false_positives'],result['false_negatives']))
+        print("number of observations: %d | error: %f | false_positives: %f | false_negatives: %f | train time: %s | params: %s"
+              % (num_obs, error, result['false_positives'],result['false_negatives'], train_time, result['params']))
+        db.addClassifierResults(result)
+        classifiers[classifier]['train_results'].append(result)
+
         if error < threshold:
             break
-    if result != None:
-        db.addClassifierResults(result)
 
     return result
+
+
+
+def testClassifier(db, unusual_case, greater, classifier, retest=False):
+    target_error = 5.0 # in percent
+    num_trials = 1000
+    max_obs = int(db.populationSize('test')/5)
+
+    tester = classifiers[classifier]['test']
+    
+    def testAux(params, num_trials, num_observations):
+        estimator = functools.partial(tester, params, greater)
+        estimates = bootstrap3(estimator, db, 'test', unusual_case, num_observations, num_trials)
+        null_estimates = bootstrap3(estimator, db, 'train_null', unusual_case, num_observations, num_trials)
+
+        bad_estimates = len([e for e in estimates if e != 1])
+        bad_null_estimates = len([e for e in null_estimates if e != 0])
+        
+        false_negatives = 100.0*bad_estimates/num_trials
+        false_positives = 100.0*bad_null_estimates/num_trials
+        print("testAux:", num_observations, false_positives, false_negatives, params)
+        return false_positives,false_negatives
+
+
+    if retest:
+        print("Dropping stored test results...")
+        db.deleteClassifierResults(classifier, 'test')
+
+
+    test_results = []
+    lte = math.log(target_error/100.0)
+    for tr in classifiers[classifier]['train_results']:
+        db.resetOffsets()
+        params = json.loads(tr['params'])
+        num_obs = tr['num_observations']
+    
+        print("initial test")
+        fp,fn = testAux(params, num_trials, num_obs)
+        error = (fp+fn)/2.0
+        print("walking up")
+        while (error > target_error) and (num_obs < max_obs):
+            increase_factor = 1.5 * lte/math.log(error/100.0) # don't ask how I came up with this
+            #print("increase_factor:", increase_factor)
+            num_obs = min(int(increase_factor*num_obs), max_obs)
+            fp,fn = testAux(params, num_trials, num_obs)
+            error = (fp+fn)/2.0
+
+        print("walking down")
+        while (num_obs > 0):
+            current_best = (num_obs,error,params,fp,fn)
+            num_obs = int(0.95*num_obs)
+            fp,fn = testAux(params, num_trials, num_obs)
+            error = (fp+fn)/2.0
+            if error > target_error:
+                break
+        
+        test_results.append(current_best)
+
+    test_results.sort()
+    best_obs,error,best_params,fp,fn = test_results[0]
+    
+    return {'classifier':classifier,
+            'trial_type':"test",
+            'num_observations':best_obs,
+            'num_trials':num_trials,
+            'params':best_params,
+            'false_positives':fp,
+            'false_negatives':fn}
 
 
 start = time.time()
@@ -267,20 +408,23 @@ print("unusual_diff:", unusual_diff)
 end = time.time()
 print(":", end-start)
 
-
-for c,funcs in classifiers.items():
+for c in sorted(classifiers.keys()):
+    if classifiers[c]['train'] == None:
+        continue
     start = time.time()
     print("Training %s..." % c)
-    result = trainClassifier(db, unusual_case, greater, funcs['train'])
+    result = trainClassifier(db, unusual_case, greater, c, c in options.retrain)
     print("%s result:" % c)
     pprint.pprint(result)
     print("completed in:", time.time()-start)
 
-sys.exit(0)
+db.clearCache()
 
-start = time.time()
-results = trainBoxTest(db, unusual_case, greater, 6000)
-#db.addClassifierResults(results)
-print("multi box test result:")
-pprint.pprint(results)
-print(":", time.time()-start)
+for c in sorted(classifiers.keys()):
+    start = time.time()
+    print("Testing %s..." % c)
+    result = testClassifier(db, unusual_case, greater, c, c in options.retest)
+    print("%s result:" % c)
+    pprint.pprint(result)
+    classifiers[c]['test_error'] = (result['false_positives']+result['false_negatives'])/2.0
+    print("completed in:", time.time()-start)

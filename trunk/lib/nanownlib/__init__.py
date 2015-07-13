@@ -3,6 +3,7 @@
 
 import sys
 import time
+import traceback
 import random
 import argparse
 import socket
@@ -208,20 +209,25 @@ requests.packages.urllib3.connection.HTTPConnection.response_class = MonitoredHT
 
 def removeDuplicatePackets(packets):
     #return packets
-    suspect = None
+    suspect = ''
     seen = {}
     # XXX: Need to review this deduplication algorithm and make sure it is correct
     for p in packets:
         key = (p['sent'],p['tcpseq'],p['tcpack'],p['payload_len'])
-        if (key not in seen)\
-           or p['sent']==1 and (seen[key]['observed'] < p['observed'])\
-           or p['sent']==0 and (seen[key]['observed'] > p['observed']):
-            #if (key not in seen) or (seen[key]['observed'] > p['observed']):
+        if (key not in seen):
             seen[key] = p
+            continue
+        if p['sent']==1 and (seen[key]['observed'] > p['observed']): #earliest sent
+            seen[key] = p
+            suspect += 's'
+            continue 
+        if p['sent']==0 and (seen[key]['observed'] > p['observed']): #earliest rcvd
+            seen[key] = p
+            suspect += 'r'
+            continue
     
-    if len(seen) < len(packets):
-        suspect = 'd'
-        #sys.stderr.write("INFO: removed %d duplicate packets.\n" % (len(packets) - len(seen)))
+    #if len(seen) < len(packets):
+    #   sys.stderr.write("INFO: removed %d duplicate packets.\n" % (len(packets) - len(seen)))
 
     return suspect,seen.values()
 
@@ -229,20 +235,24 @@ def removeDuplicatePackets(packets):
 def analyzePackets(packets, timestamp_precision, trim_sent=0, trim_rcvd=0):
     suspect,packets = removeDuplicatePackets(packets)
 
-    #sort_key = lambda d: (d['tcpseq'],d['tcpack'])
-    sort_key = lambda d: (d['observed'],d['tcpseq'])
+    sort_key = lambda d: (d['tcpseq'],d['observed'])
     sent = sorted((p for p in packets if p['sent']==1 and p['payload_len']>0), key=sort_key)
     rcvd = sorted((p for p in packets if p['sent']==0 and p['payload_len']>0), key=sort_key)
 
-    if len(sent) <= trim_sent:
-        last_sent = sent[-1]
-    else:
-        last_sent = sent[trim_sent]
+    alt_key = lambda d: (d['observed'],d['tcpseq'])
+    rcvd_alt = sorted((p for p in packets if p['sent']==0 and p['payload_len']>0), key=alt_key)
 
-    if len(rcvd) <= trim_rcvd:
-        last_rcvd = rcvd[0]
-    else:
-        last_rcvd = rcvd[len(rcvd)-1-trim_rcvd]
+    s_off = trim_sent
+    if s_off >= len(sent):
+        s_off = -1
+    last_sent = sent[s_off]
+
+    r_off = len(rcvd) - trim_rcvd - 1
+    if r_off <= 0:
+        r_off = 0
+    last_rcvd = rcvd[r_off]
+    if last_rcvd != rcvd_alt[r_off]:
+        suspect += 'R'
     
     packet_rtt = last_rcvd['observed'] - last_sent['observed']
     if packet_rtt < 0:
@@ -271,22 +281,27 @@ def evaluateTrim(db, unusual_case, strim, rtrim):
     cursor = db.conn.cursor()
     query="""
       SELECT packet_rtt-(SELECT avg(packet_rtt) FROM probes,trim_analysis 
-                         WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND sample=u.sample AND probes.type in ('train','test'))
-      FROM (SELECT probes.sample,packet_rtt FROM probes,trim_analysis WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case=:unusual_case AND probes.type in ('train','test')) u
+                         WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND sample=u.s AND probes.type in ('train','test'))
+      FROM (SELECT probes.sample s,packet_rtt FROM probes,trim_analysis WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case=:unusual_case AND probes.type in ('train','test') AND 1 NOT IN (select 1 from probes p,trim_analysis t WHERE p.sample=s AND t.probe_id=p.id AND t.suspect LIKE '%R%')) u
+    """
+    query="""
+      SELECT packet_rtt-(SELECT avg(packet_rtt) FROM probes,trim_analysis 
+                         WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND sample=u.s AND probes.type in ('train','test'))
+      FROM (SELECT probes.sample s,packet_rtt FROM probes,trim_analysis WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case=:unusual_case AND probes.type in ('train','test')) u
     """
 
     params = {"strim":strim,"rtrim":rtrim,"unusual_case":unusual_case}
     cursor.execute(query, params)
     differences = [row[0] for row in cursor]
     
-    return trimean(differences),mad(differences)
+    return ubersummary(differences),mad(differences)
 
 
 
 def analyzeProbes(db):
     db.conn.execute("CREATE INDEX IF NOT EXISTS packets_probe ON packets (probe_id)")
     pcursor = db.conn.cursor()
-    kcursor = db.conn.cursor()
+    db.conn.commit()
 
     pcursor.execute("SELECT tcpts_mean FROM meta")
     try:
@@ -296,23 +311,44 @@ def analyzeProbes(db):
     
     pcursor.execute("DELETE FROM trim_analysis")
     db.conn.commit()
+
+    def loadPackets(db):
+        cursor = db.conn.cursor()
+        cursor.execute("SELECT * FROM packets ORDER BY probe_id")
+
+        probe_id = None
+        entry = []
+        ret_val = []
+        for p in cursor:
+            if probe_id == None:
+                probe_id = p['probe_id']
+            if p['probe_id'] != probe_id:
+                ret_val.append((probe_id,entry))
+                probe_id = p['probe_id']
+                entry = []
+            entry.append(dict(p))
+        ret_val.append((probe_id,entry))
+        return ret_val
+    
+    start = time.time()
+    packet_cache = loadPackets(db)
+    print("packets loaded in: %f" % (time.time()-start))
     
     count = 0
     sent_tally = []
     rcvd_tally = []
-    for pid, in pcursor.execute("SELECT id FROM probes"):
-        kcursor.execute("SELECT * FROM packets WHERE probe_id=?", (pid,))
+    for probe_id,packets in packet_cache:
         try:
-            analysis,s,r = analyzePackets(kcursor.fetchall(), timestamp_precision)
-            analysis['probe_id'] = pid
+            analysis,s,r = analyzePackets(packets, timestamp_precision)
+            analysis['probe_id'] = probe_id
             sent_tally.append(s)
             rcvd_tally.append(r)
+            db.addTrimAnalyses([analysis])
         except Exception as e:
-            print(e)
-            sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % pid)
+            traceback.print_exc()
+            sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % probe_id)
         
         #print(pid,analysis)
-        db.addTrimAnalyses([analysis])
         count += 1
     db.conn.commit()
     num_sent = statistics.mode(sent_tally)
@@ -325,17 +361,16 @@ def analyzeProbes(db):
         for rtrim in range(0,num_rcvd):
             if strim == 0 and rtrim == 0:
                 continue # no point in doing 0,0 again
-            for pid, in pcursor.execute("SELECT id FROM probes"):
-                kcursor.execute("SELECT * FROM packets WHERE probe_id=?", (pid,))
+            for probe_id,packets in packet_cache:
                 try:
-                    analysis,s,r = analyzePackets(kcursor.fetchall(), timestamp_precision, strim, rtrim)
-                    analysis['probe_id'] = pid
+                    analysis,s,r = analyzePackets(packets, timestamp_precision, strim, rtrim)
+                    analysis['probe_id'] = probe_id
                 except Exception as e:
                     print(e)
                     sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % pid)
                     
                 db.addTrimAnalyses([analysis])
-            db.conn.commit()
+    db.conn.commit()
 
     # Populate analysis table so findUnusualTestCase can give us a starting point
     pcursor.execute("DELETE FROM analysis")
@@ -358,7 +393,7 @@ def analyzeProbes(db):
     
     for strim in range(1,num_sent):
         delta,mad = evaluations[(strim,0)]
-        if abs(good_delta - delta) < abs(delta_margin*good_delta) and mad < good_mad:
+        if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
             best_strim = strim
         else:
             break
@@ -366,7 +401,7 @@ def analyzeProbes(db):
     good_delta,good_mad = evaluations[(best_strim,0)]
     for rtrim in range(1,num_rcvd):
         delta,mad = evaluations[(best_strim,rtrim)]
-        if (abs(delta) > abs(good_delta) or abs(good_delta - delta) < abs(delta_margin*good_delta)) and mad < good_mad:
+        if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
             best_rtrim = rtrim
         else:
             break
@@ -424,19 +459,19 @@ def findUnusualTestCase(db):
 
     cursor = db.conn.cursor()
     cursor.execute("SELECT packet_rtt FROM probes,analysis WHERE probes.id=analysis.probe_id AND probes.type in ('train','test')")
-    global_tm = trimean([row['packet_rtt'] for row in cursor])
+    global_tm = quadsummary([row['packet_rtt'] for row in cursor])
 
     tm_abs = []
     tm_map = {}
     # XXX: if more speed needed, percentile extension to sqlite might be handy...
     for tc in test_cases:
         cursor.execute("SELECT packet_rtt FROM probes,analysis WHERE probes.id=analysis.probe_id AND probes.type in ('train','test') AND probes.test_case=?", (tc,))
-        tm_map[tc] = trimean([row['packet_rtt'] for row in cursor])
+        tm_map[tc] = quadsummary([row['packet_rtt'] for row in cursor])
         tm_abs.append((abs(tm_map[tc]-global_tm), tc))
 
     magnitude,tc = max(tm_abs)
     cursor.execute("SELECT packet_rtt FROM probes,analysis WHERE probes.id=analysis.probe_id AND probes.type in ('train','test') AND probes.test_case<>?", (tc,))
-    remaining_tm = trimean([row['packet_rtt'] for row in cursor])
+    remaining_tm = quadsummary([row['packet_rtt'] for row in cursor])
 
     ret_val = (tc, tm_map[tc]-remaining_tm)
     print("unusual_case: %s, delta: %f" % ret_val)

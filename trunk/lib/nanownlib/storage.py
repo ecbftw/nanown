@@ -3,10 +3,13 @@
 import sys
 import os
 import uuid
+import random
 import threading
 import sqlite3
 
 import numpy
+# Don't trust numpy's seeding
+numpy.random.seed(random.SystemRandom().randint(0,2**32-1))
 
 def _newid():
     return uuid.uuid4().hex
@@ -17,6 +20,8 @@ class db(threading.local):
     cursor = None
     _population_sizes = None
     _population_cache = None
+    _offset_cache = None
+    _cur_offsets = None
     
     def __init__(self, path):
         exists = os.path.exists(path)
@@ -25,6 +30,8 @@ class db(threading.local):
         self.conn.row_factory = sqlite3.Row
         self._population_sizes = {}
         self._population_cache = {}
+        self._offset_cache = {}
+        self._cur_offsets = {}
         
         if not exists:
             self.conn.execute(
@@ -78,11 +85,11 @@ class db(threading.local):
 
             self.conn.execute(
                 """CREATE TABLE classifier_results (id BLOB PRIMARY KEY,
-                                                    algorithm TEXT,
-                                                    params TEXT,
-                                                    sample_size INTEGER,
-                                                    num_trials INTEGER,
+                                                    classifier TEXT,
                                                     trial_type TEXT,
+                                                    num_observations INTEGER,
+                                                    num_trials INTEGER,
+                                                    params TEXT,
                                                     false_positives REAL,
                                                     false_negatives REAL)
                 """)
@@ -108,7 +115,9 @@ class db(threading.local):
 
 
     def subseries(self, probe_type, unusual_case, size=None, offset=None, field='packet_rtt'):
-        if (probe_type,unusual_case,field) not in self._population_cache:
+        cache_key = (probe_type,unusual_case,field)
+        
+        if cache_key not in self._population_cache:
             query="""
             SELECT %(field)s AS unusual_case,
                    (SELECT avg(%(field)s) FROM probes,analysis
@@ -120,28 +129,42 @@ class db(threading.local):
             params = {"probe_type":probe_type, "unusual_case":unusual_case}
             cursor = self.conn.cursor()
             cursor.execute(query, params)
-            self._population_cache[(probe_type,unusual_case,field)] = [dict(row) for row in cursor.fetchall()]
+            p = [dict(row) for row in cursor.fetchall()]
+            self._population_cache[cache_key] = p
+            self._offset_cache[cache_key] = tuple(numpy.random.random_integers(0,len(p)-1, len(p)/5))
+            self._cur_offsets[cache_key] = 0
 
-        population = self._population_cache[(probe_type,unusual_case,field)]
+        population = self._population_cache[cache_key]
 
         if size == None or size > len(population):
             size = len(population)
         if offset == None or offset >= len(population) or offset < 0:
-            offset = numpy.random.random_integers(0,len(population)-1)
-
+            offset = self._offset_cache[cache_key][self._cur_offsets[cache_key]]
+            self._cur_offsets[cache_key] = (offset + 1) % len(self._offset_cache[cache_key])
+        
         try:
-            ret_val = population[offset:offset+size]
+            offset = int(offset)
+            size = int(size)
         except Exception as e:
             print(e, offset, size)
-            
+            return None
+        
+        ret_val = population[offset:offset+size]
         if len(ret_val) < size:
             ret_val += population[0:size-len(ret_val)]
         
         return ret_val
-
     
+    
+    def resetOffsets(self):
+        for k in self._cur_offsets.keys():
+            self._cur_offsets[k] = 0
+
+            
     def clearCache(self):
         self._population_cache = {}
+        self._offset_cache = {}
+        self._cur_offsets = {}
 
         
     def _insert(self, table, row):
@@ -187,3 +210,31 @@ class db(threading.local):
         ret_val = self._insert('classifier_results', results)
         self.conn.commit()
         return ret_val
+
+    def fetchClassifierResult(self, classifier, trial_type, num_observations):
+        query = """
+          SELECT * FROM classifier_results
+          WHERE classifier=? AND trial_type=? AND num_observations=? 
+          ORDER BY false_positives+false_negatives
+          LIMIT 1;
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(query, (classifier, trial_type, num_observations))
+        ret_val = cursor.fetchone()
+
+        if ret_val != None:
+            ret_val = dict(ret_val)
+        return ret_val
+
+    def deleteClassifierResults(self, classifier, trial_type, num_observations=None):
+        params = {"classifier":classifier,"trial_type":trial_type,"num_observations":num_observations}
+        query = """
+          DELETE FROM classifier_results
+          WHERE classifier=:classifier AND trial_type=:trial_type
+        """
+        if num_observations != None:
+            query += " AND num_observations=:num_observations"
+        
+        self.conn.execute(query, params)
+        self.conn.commit()
+        
