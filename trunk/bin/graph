@@ -104,10 +104,103 @@ try:
 except:
     pass
 
-print('tsval diff mean: %f' % numpy.mean(differences(db, 'long', 'tsval')))
-print('tsval null diff mean: %f' % numpy.mean(null_differences(db, 'long', 'tsval')))
-print('tsval diff weighted mean: %f' % tsvalwmean(db.subseries('train','long')+db.subseries('test','long')))
-print('tsval null diff weighted mean: %f' % tsvalwmean(db.subseries('train_null','long')))
+#print('tsval diff mean: %f' % numpy.mean(differences(db, 'long', 'tsval')))
+#print('tsval null diff mean: %f' % numpy.mean(null_differences(db, 'long', 'tsval')))
+#print('tsval diff weighted mean: %f' % tsvalwmean(db.subseries('train','long')+db.subseries('test','long')))
+#print('tsval null diff weighted mean: %f' % tsvalwmean(db.subseries('train_null','long')))
+
+
+def getTCPTSPrecision():
+    cursor = db.conn.cursor()
+    query="""SELECT tcpts_mean FROM meta;"""
+    cursor.execute(query)
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+    return None
+
+
+def tsFilteredHistogram():
+    tcpts_precision = getTCPTSPrecision()
+    
+    num_bins = 500
+    all = db.subseries('train','long')+db.subseries('test','long')
+    diffs     = [s['unusual_packet']-s['other_packet'] for s in all]
+    ts0_diffs = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']-s['other_tsval'] == 0]
+    ts1_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(s['unusual_tsval']-s['other_tsval']) > 0]
+    ts2_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(round((s['unusual_tsval']-s['other_tsval'])/tcpts_precision)) <= 1.0]
+
+    ts_mode = statistics.mode([s['unusual_tsval'] for s in all]+[s['other_tsval'] for s in all])
+    ts_diff_mode = statistics.mode([s['unusual_tsval']-s['other_tsval'] for s in all])
+    ts_common_mode = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']<=ts_mode and s['other_tsval']<=ts_mode]
+    ts_common_diff_mode = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']-s['other_tsval']==ts_diff_mode]
+
+    print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
+    print('packet_rtt tsval diff=0 quadsummary: %f' % quadsummary(ts0_diffs))
+    print('packet_rtt tsval diff>0 quadsummary: %f' % quadsummary(ts1_diffs))
+    print('packet_rtt tsval diff<=1 quadsummary: %f' % quadsummary(ts2_diffs))
+    print('packet_rtt tsval mode quadsummary: %f' % quadsummary(ts_common_mode))
+    print(len(diffs), len(ts0_diffs)+len(ts1_diffs))
+    diffs.sort()
+    cut_off_low = diffs[int(len(diffs)*0.005)]
+    cut_off_high = diffs[int(len(diffs)*0.995)]
+
+    plt.clf()
+    # the histogram of the data
+    n, bins, patches = plt.hist(diffs, num_bins, normed=0, color='black', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='all')
+    n, bins, patches = plt.hist(ts0_diffs, num_bins, normed=0, color='blue', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='tsval diff=0')
+    n, bins, patches = plt.hist(ts1_diffs, num_bins, normed=0, color='red', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='tsval diff>0')
+    n, bins, patches = plt.hist(ts2_diffs, num_bins, normed=0, color='orange', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='tsval diff<=1')
+    #n, bins, patches = plt.hist(ts_common_mode, num_bins, normed=0, color='green', histtype='step', alpha=0.8,
+    #                            range=(cut_off_low,cut_off_high), label='tsval common mode')
+    n, bins, patches = plt.hist(ts_common_diff_mode, num_bins, normed=0, color='green', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='tsval common diff mode')
+    plt.xlabel('RTT Difference')
+    plt.ylabel('Probability')
+    plt.title(r'Histogram - distribution of differences by tsval')
+
+    # Tweak spacing to prevent clipping of ylabel
+    plt.subplots_adjust(left=0.15)
+    plt.legend()
+    plt.show()
+    #plt.savefig('paper/graphs/dists-vs-dist-of-diffs2.svg')
+
+tsFilteredHistogram()
+sys.exit(0)
+
+
+from pykalman import KalmanFilter
+#kf = KalmanFilter(transition_matrices = [[1, 1], [0, 1]], observation_matrices = [[0.1, 0.5], [-0.3, 0.0]])
+kf = KalmanFilter(transition_matrices = [[1, 0], [0, 1]], n_dim_obs=2, observation_matrices = [[1.0, 0], [0, 1.0]])
+
+#delta = 1e-5
+#trans_cov = delta / (1 - delta) * np.eye(2)
+
+#kf = KalmanFilter(n_dim_obs=2, n_dim_state=2,
+#                  initial_state_mean=np.zeros(2),
+#                  initial_state_covariance=np.ones((2, 2)),
+#                  transition_matrices=np.eye(2),
+#                  observation_matrices=obs_mat,
+#                  observation_covariance=1.0,
+#                  transition_covariance=trans_cov)
+
+
+#measurements = numpy.asarray([[1,0], [0,0], [0,1]])  # 3 observations
+measurements = numpy.asarray([(s['unusual_packet'],s['other_packet']) for s in (db.subseries('train','long')+db.subseries('test','long'))])
+kf = kf.em(measurements, n_iter=5)
+#(filtered_state_means, filtered_state_covariances) = kf.filter(measurements)
+#print("packet_rtt pykalman:", filtered_state_means[-1][0]-filtered_state_means[-1][1])
+#print("packet_rtt pykalman:", filtered_state_means[-1])
+
+(smoothed_state_means, smoothed_state_covariances) = kf.smooth(measurements)
+#up = numpy.mean([m[0] for m in smoothed_state_means])
+#op = numpy.mean([m[1] for m in smoothed_state_means])
+print("packet_rtt pykalman:", smoothed_state_means[-1], smoothed_state_means[-1][0]-smoothed_state_means[-1][1])
+#print("packet_rtt pykalman:", up, op, up-op)
 
 
 #all_data = longs+shorts
