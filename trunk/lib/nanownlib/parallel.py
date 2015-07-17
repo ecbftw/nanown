@@ -1,5 +1,6 @@
 #
 
+import sys
 import threading
 import queue
 
@@ -32,7 +33,7 @@ class WorkerThreads(object):
             try:
                 self.resultq.put((job_id, self.target(*args)))
             except Exception as e:
-                sys.stderr.write("ERROR: Job '%s' failed with '%s'.  Dropping...\n",
+                sys.stderr.write("ERROR: Job '%s' failed with '%s'.  Dropping...\n" %
                                  (str(job_id),str(e)))
             self.workq.task_done()
 

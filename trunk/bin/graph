@@ -39,18 +39,14 @@ options = parser.parse_args()
 db = nanownlib.storage.db(options.db_file)
 
 
-def differences(db, unusual_case, column='packet_rtt'):
-    cursor = db.conn.cursor()
-    query="""
-      SELECT %(column)s-(SELECT avg(%(column)s) FROM probes,analysis
-                         WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type in ('train','test') AND sample=u.sample)
-      FROM (SELECT probes.sample,%(column)s FROM probes,analysis 
-                         WHERE analysis.probe_id=probes.id AND probes.test_case =:unusual_case AND probes.type in ('train','test')) u
-      """ % {"column":column}
-    params = {"unusual_case":unusual_case}
-    cursor.execute(query, params)
-    for row in cursor:
-        yield row[0]
+def differences(db, unusual_case, rtt_type='packet'):
+    ret_val = [s['unusual_'+rtt_type]-s['other_'+rtt_type] for s in db.subseries('train', unusual_case)]
+    ret_val += [s['unusual_'+rtt_type]-s['other_'+rtt_type] for s in db.subseries('test', unusual_case)]
+    return ret_val
+
+def null_differences(db, unusual_case, rtt_type='packet'):
+    ret_val = [s['unusual_'+rtt_type]-s['other_'+rtt_type] for s in db.subseries('train_null', unusual_case)]
+    return ret_val
 
 
 def timeSeries(db, probe_type, unusual_case):
@@ -90,18 +86,28 @@ print('packet_rtt diff trimean: %f' % trimean(diffs))
 print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
 print('packet_rtt diff ubersummary: %f' % ubersummary(diffs))
 print('packet_rtt diff MAD: %f' % mad(diffs))
-print('reported diff trimean: %f' % trimean(reported_diffs))
-print('reported diff quadsummary: %f' % quadsummary(reported_diffs))
-print('reported diff ubersummary: %f' % ubersummary(reported_diffs))
-print('reported diff MAD: %f' % mad(reported_diffs))
+try:
+    print('reported diff trimean: %f' % trimean(reported_diffs))
+    print('reported diff quadsummary: %f' % quadsummary(reported_diffs))
+    print('reported diff ubersummary: %f' % ubersummary(reported_diffs))
+    print('reported diff MAD: %f' % mad(reported_diffs))
 
-import cProfile
-kresults = kfilter({},diffs)
-#print('packet_rtt diff kfilter: ', numpy.mean(kresults['est']), kresults['var'])
-print('packet_rtt diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
-kresults = kfilter({},reported_diffs)
-#print('reported diff kfilter: ', numpy.mean(kresults['est']), kresults['var'][-1])
-print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+    import cProfile
+    start = time.time()
+    kresults = kfilter({},diffs)
+    #print('packet_rtt diff kfilter: ', numpy.mean(kresults['est']), kresults['var'])
+    print('packet_rtt diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+    kresults = kfilter({},reported_diffs)
+    #print('reported diff kfilter: ', numpy.mean(kresults['est']), kresults['var'][-1])
+    print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+    print("kfilter time: %f" % (time.time()-start))
+except:
+    pass
+
+print('tsval diff mean: %f' % numpy.mean(differences(db, 'long', 'tsval')))
+print('tsval null diff mean: %f' % numpy.mean(null_differences(db, 'long', 'tsval')))
+print('tsval diff weighted mean: %f' % tsvalwmean(db.subseries('train','long')+db.subseries('test','long')))
+print('tsval null diff weighted mean: %f' % tsvalwmean(db.subseries('train_null','long')))
 
 
 #all_data = longs+shorts
@@ -109,6 +115,115 @@ print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
 #cut_off_low = all_data[0]
 #cut_off_high = all_data[int(len(all_data)*0.997)]
 
+
+def plotSingleProbe(probe_id=None):
+    if probe_id == None:
+        cursor = db.conn.cursor()
+        query="""SELECT probe_id FROM analysis WHERE suspect='' ORDER BY probe_id DESC limit 1 OFFSET 10"""
+        cursor.execute(query)
+        probe_id = cursor.fetchone()[0]
+    
+    cursor = db.conn.cursor()
+    query="""SELECT observed,payload_len FROM packets WHERE probe_id=? AND sent=1"""
+    cursor.execute(query, (probe_id,))
+    pkts = cursor.fetchall()
+    sent_payload = [row[0] for row in pkts if row[1] != 0]
+    sent_other = [row[0] for row in pkts if row[1] == 0]
+    
+    query="""SELECT observed,payload_len FROM packets WHERE probe_id=? AND sent=0"""
+    cursor.execute(query, (probe_id,))
+    pkts = cursor.fetchall()
+    rcvd_payload = [row[0] for row in pkts if row[1] != 0]
+    rcvd_other = [row[0] for row in pkts if row[1] == 0]
+    
+    #query="""SELECT reported,time_of_day FROM probes WHERE id=?"""
+    #cursor.execute(query, (probe_id,))
+    #reported,tod = cursor.fetchone()
+    #userspace_times = [sent_times[0]-reported/3.0, sent_times[0]+reported]
+
+    print("single probe counts:",len(sent_payload),len(sent_other),len(rcvd_payload),len(rcvd_other))
+    plt.clf()
+    plt.title("Single HTTP Request - Packet Times")
+    sp = plt.eventplot(sent_payload, colors=('red',), lineoffsets=8, linewidths=2, alpha=0.6,label='sent')
+    so = plt.eventplot(sent_other, colors=('red',), lineoffsets=6, linewidths=2, alpha=0.6,label='sent')
+    rp = plt.eventplot(rcvd_payload, colors=('blue',), lineoffsets=4, linewidths=2, alpha=0.6,label='received')
+    ro = plt.eventplot(rcvd_other, colors=('blue',), lineoffsets=2, linewidths=2, alpha=0.6,label='received')
+    #plt.legend((s,r), ('sent','received'))
+    #plt.savefig('../img/http-packet-times.svg')
+    plt.show()
+
+#plotSingleProbe()
+
+
+def graphTestResults():
+    plt.clf()
+    plt.title("Test Results")
+    plt.xlabel('sample size')
+    plt.ylabel('error rate')
+    legend = []
+    colors = ['red','blue','green','purple','orange','black','brown']
+    color_id = 0
+
+    cursor = db.conn.cursor()
+    query = """
+      SELECT classifier FROM classifier_results GROUP BY classifier ORDER BY classifier;
+    """
+    cursor.execute(query)
+    classifiers = []
+    for c in cursor:
+        classifiers.append(c[0])
+
+    for classifier in classifiers:
+        query="""
+        SELECT params FROM classifier_results 
+        WHERE trial_type='test'
+         AND classifier=:classifier
+         AND (false_positives+false_negatives)/2.0 < 5.0 
+        ORDER BY num_observations,(false_positives+false_negatives) 
+        LIMIT 1
+        """
+        cursor.execute(query, {'classifier':classifier})
+        row = cursor.fetchone()
+        if row == None:
+            query="""
+            SELECT params FROM classifier_results 
+            WHERE trial_type='test' and classifier=:classifier
+            ORDER BY (false_positives+false_negatives),num_observations
+            LIMIT 1
+            """
+            cursor.execute(query, {'classifier':classifier})
+            row = cursor.fetchone()
+            if row == None:
+                sys.stderr.write("WARN: couldn't find test results for classifier '%s'.\n" % classifier)
+                continue
+
+        best_params = row[0]
+        query="""
+        SELECT num_observations,(false_positives+false_negatives)/2.0 FROM classifier_results 
+        WHERE trial_type='test'
+         AND classifier=:classifier
+         AND params=:params 
+        ORDER BY num_observations
+        """
+        cursor.execute(query, {'classifier':classifier,'params':best_params})
+
+        num_obs = []
+        performance = []
+        for row in cursor:
+            num_obs.append(row[0])
+            performance.append(row[1])
+        #print(num_obs,performance)
+        path = plt.scatter(num_obs, performance, color=colors[color_id], s=4, alpha=0.8, linewidths=3.0)
+        plt.plot(num_obs, performance, color=colors[color_id], alpha=0.8)
+        legend.append((classifier,path))
+        color_id = (color_id+1) % len(colors)
+
+    plt.legend([l[1] for l in legend], [l[0] for l in legend], scatterpoints=1, fontsize='xx-small')
+    plt.show()
+        
+graphTestResults()
+
+sys.exit(0)
 
 plt.clf()
 plt.title("Packet RTT over time")
@@ -121,6 +236,18 @@ plt.legend((s,l,d), ('short','long','difference'), scatterpoints=1)
 #plt.savefig('paper/figures/comcast-powerboost1.png')
 plt.show()
 
+
+
+plt.clf()
+plt.title("Simple HTTP Request")
+plt.xlabel('Time of Day')
+plt.ylabel('')
+s = plt.scatter(sent_times, [2]*len(sent_times), s=3, color='red', alpha=0.9)
+r = plt.scatter(rcvd_times, [1]*len(rcvd_times), s=3, color='blue', alpha=0.9)
+plt.legend((s,r), ('sent','received'), scatterpoints=1)
+plt.show()
+
+sys.exit(0)
 short_overtime,long_overtime,diff_overtime = None,None,None
 
 

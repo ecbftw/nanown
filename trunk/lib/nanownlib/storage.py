@@ -114,17 +114,25 @@ class db(threading.local):
             return 0
 
 
-    def subseries(self, probe_type, unusual_case, size=None, offset=None, field='packet_rtt'):
-        cache_key = (probe_type,unusual_case,field)
-        
+    def subseries(self, probe_type, unusual_case, size=None, offset=None):
+        cache_key = (probe_type,unusual_case)
         if cache_key not in self._population_cache:
             query="""
-            SELECT %(field)s AS unusual_case,
-                   (SELECT avg(%(field)s) FROM probes,analysis
-                    WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type=:probe_type AND sample=u.sample) AS other_cases
-            FROM   (SELECT probes.sample,%(field)s FROM probes,analysis 
+            SELECT packet_rtt AS unusual_packet,
+                   (SELECT avg(packet_rtt) FROM probes,analysis
+                    WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type=:probe_type AND sample=u.sample) AS other_packet,
+
+                   tsval_rtt AS unusual_tsval,
+                   (SELECT avg(tsval_rtt) FROM probes,analysis
+                    WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type=:probe_type AND sample=u.sample) AS other_tsval,
+
+                   reported AS unusual_reported,
+                   (SELECT avg(reported) FROM probes,analysis
+                    WHERE analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND probes.type=:probe_type AND sample=u.sample) AS other_reported
+
+            FROM   (SELECT probes.sample,packet_rtt,tsval_rtt,reported FROM probes,analysis 
                     WHERE analysis.probe_id=probes.id AND probes.test_case =:unusual_case AND probes.type=:probe_type) u
-            """ % {"field":field}
+            """
     
             params = {"probe_type":probe_type, "unusual_case":unusual_case}
             cursor = self.conn.cursor()
@@ -206,26 +214,34 @@ class db(threading.local):
     def addTrimAnalyses(self, analyses):
         return [self._insert('trim_analysis', row) for row in analyses]
 
-    def addClassifierResults(self, results):
+    def addClassifierResult(self, results):
         ret_val = self._insert('classifier_results', results)
         self.conn.commit()
         return ret_val
 
-    def fetchClassifierResult(self, classifier, trial_type, num_observations):
+    def fetchClassifierResult(self, classifier, trial_type, num_observations, params=None):
         query = """
           SELECT * FROM classifier_results
-          WHERE classifier=? AND trial_type=? AND num_observations=? 
-          ORDER BY false_positives+false_negatives
-          LIMIT 1;
+            WHERE classifier=:classifier 
+                  AND trial_type=:trial_type 
+                  AND num_observations=:num_observations"""
+        if params != None:
+            query += """
+                  AND params=:params"""
+        query += """
+            ORDER BY false_positives+false_negatives
+            LIMIT 1
         """
-        cursor = self.conn.cursor()
-        cursor.execute(query, (classifier, trial_type, num_observations))
-        ret_val = cursor.fetchone()
 
+        qparams = {'classifier':classifier, 'trial_type':trial_type,
+                   'num_observations':num_observations,'params':params}
+        cursor = self.conn.cursor()
+        cursor.execute(query, qparams)
+        ret_val = cursor.fetchone()
         if ret_val != None:
             ret_val = dict(ret_val)
         return ret_val
-
+    
     def deleteClassifierResults(self, classifier, trial_type, num_observations=None):
         params = {"classifier":classifier,"trial_type":trial_type,"num_observations":num_observations}
         query = """

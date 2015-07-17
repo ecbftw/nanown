@@ -219,11 +219,11 @@ def removeDuplicatePackets(packets):
             continue
         if p['sent']==1 and (seen[key]['observed'] > p['observed']): #earliest sent
             seen[key] = p
-            suspect += 's'
+            suspect += 's' # duplicated sent packets
             continue 
         if p['sent']==0 and (seen[key]['observed'] > p['observed']): #earliest rcvd
             seen[key] = p
-            suspect += 'r'
+            suspect += 'r' # duplicated received packets
             continue
     
     #if len(seen) < len(packets):
@@ -235,24 +235,25 @@ def removeDuplicatePackets(packets):
 def analyzePackets(packets, timestamp_precision, trim_sent=0, trim_rcvd=0):
     suspect,packets = removeDuplicatePackets(packets)
 
-    sort_key = lambda d: (d['tcpseq'],d['observed'])
+    sort_key = lambda d: (d['observed'],d['tcpseq'])
+    alt_key = lambda d: (d['tcpseq'],d['observed'])
     sent = sorted((p for p in packets if p['sent']==1 and p['payload_len']>0), key=sort_key)
     rcvd = sorted((p for p in packets if p['sent']==0 and p['payload_len']>0), key=sort_key)
-
-    alt_key = lambda d: (d['observed'],d['tcpseq'])
     rcvd_alt = sorted((p for p in packets if p['sent']==0 and p['payload_len']>0), key=alt_key)
 
     s_off = trim_sent
     if s_off >= len(sent):
+        suspect += 'd' # dropped packet?
         s_off = -1
     last_sent = sent[s_off]
 
     r_off = len(rcvd) - trim_rcvd - 1
-    if r_off <= 0:
+    if r_off < 0:
+        suspect += 'd' # dropped packet?
         r_off = 0
     last_rcvd = rcvd[r_off]
     if last_rcvd != rcvd_alt[r_off]:
-        suspect += 'R'
+        suspect += 'R' # reordered received packets
     
     packet_rtt = last_rcvd['observed'] - last_sent['observed']
     if packet_rtt < 0:
@@ -262,6 +263,7 @@ def analyzePackets(packets, timestamp_precision, trim_sent=0, trim_rcvd=0):
     try:
         last_sent_ack = min(((p['observed'],p) for p in packets
                              if p['sent']==0 and p['payload_len']+last_sent['tcpseq']==p['tcpack']))[1]
+        
     except Exception as e:
         sys.stderr.write("WARN: Could not find last_sent_ack.\n")
 
@@ -300,9 +302,9 @@ def evaluateTrim(db, unusual_case, strim, rtrim):
 
 def analyzeProbes(db):
     db.conn.execute("CREATE INDEX IF NOT EXISTS packets_probe ON packets (probe_id)")
-    pcursor = db.conn.cursor()
     db.conn.commit()
 
+    pcursor = db.conn.cursor()
     pcursor.execute("SELECT tcpts_mean FROM meta")
     try:
         timestamp_precision = pcursor.fetchone()[0]
@@ -345,7 +347,7 @@ def analyzeProbes(db):
             rcvd_tally.append(r)
             db.addTrimAnalyses([analysis])
         except Exception as e:
-            traceback.print_exc()
+            #traceback.print_exc()
             sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % probe_id)
         
         #print(pid,analysis)
@@ -366,8 +368,8 @@ def analyzeProbes(db):
                     analysis,s,r = analyzePackets(packets, timestamp_precision, strim, rtrim)
                     analysis['probe_id'] = probe_id
                 except Exception as e:
-                    print(e)
-                    sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % pid)
+                    #traceback.print_exc()
+                    sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % probe_id)
                     
                 db.addTrimAnalyses([analysis])
     db.conn.commit()
