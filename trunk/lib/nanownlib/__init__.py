@@ -175,7 +175,7 @@ def OLSRegression(x,y):
 def startSniffer(target_ip, target_port, output_file):
     my_ip = getLocalIP(target_ip, target_port)
     my_iface = getIfaceForIP(my_ip)
-    return subprocess.Popen(['chrt', '-r', '99', './bin/csamp', my_iface, my_ip,
+    return subprocess.Popen(['chrt', '-r', '99', 'nanown-csamp', my_iface, my_ip,
                              target_ip, "%d" % target_port, output_file, '0'])
 
 def stopSniffer(sniffer):
@@ -255,22 +255,23 @@ def analyzePackets(packets, timestamp_precision, trim_sent=0, trim_rcvd=0):
     if last_rcvd != rcvd_alt[r_off]:
         suspect += 'R' # reordered received packets
     
-    packet_rtt = last_rcvd['observed'] - last_sent['observed']
-    if packet_rtt < 0:
-        sys.stderr.write("WARN: Negative packet_rtt. last_rcvd=%s,last_sent=%s\n" % (last_rcvd, last_sent))
-
     last_sent_ack = None
     try:
-        last_sent_ack = min(((p['observed'],p) for p in packets
-                             if p['sent']==0 and p['payload_len']+last_sent['tcpseq']==p['tcpack']))[1]
+        last_sent_ack = min(((p['tcpack'],p['observed'],p) for p in packets
+                             if p['sent']==0 and p['payload_len']+last_sent['tcpseq']>=p['tcpack']))[2]
         
     except Exception as e:
         sys.stderr.write("WARN: Could not find last_sent_ack.\n")
 
+    packet_rtt = last_rcvd['observed'] - last_sent['observed']
     tsval_rtt = None
     if None not in (timestamp_precision, last_sent_ack):
         tsval_rtt = int(round((last_rcvd['tsval'] - last_sent_ack['tsval'])*timestamp_precision))
 
+    if packet_rtt < 0 or (tsval_rtt != None and tsval_rtt < 0):
+        #sys.stderr.write("WARN: Negative packet or tsval RTT. last_rcvd=%s,last_sent=%s\n" % (last_rcvd, last_sent))
+        suspect += 'N'
+        
     return {'packet_rtt':packet_rtt,
             'tsval_rtt':tsval_rtt,
             'suspect':suspect,
@@ -278,7 +279,7 @@ def analyzePackets(packets, timestamp_precision, trim_sent=0, trim_rcvd=0):
             'rcvd_trimmed':trim_rcvd},len(sent),len(rcvd)
 
 
-# trimean and mad for each dist of differences
+# septasummary and mad for each dist of differences
 def evaluateTrim(db, unusual_case, strim, rtrim):
     cursor = db.conn.cursor()
     query="""
@@ -291,12 +292,13 @@ def evaluateTrim(db, unusual_case, strim, rtrim):
                          WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case!=:unusual_case AND sample=u.s AND probes.type in ('train','test'))
       FROM (SELECT probes.sample s,packet_rtt FROM probes,trim_analysis WHERE sent_trimmed=:strim AND rcvd_trimmed=:rtrim AND trim_analysis.probe_id=probes.id AND probes.test_case=:unusual_case AND probes.type in ('train','test')) u
     """
-
+    #TODO: check for "N" in suspect field and return a flag
+    
     params = {"strim":strim,"rtrim":rtrim,"unusual_case":unusual_case}
     cursor.execute(query, params)
     differences = [row[0] for row in cursor]
     
-    return ubersummary(differences),mad(differences)
+    return septasummary(differences),mad(differences)
 
 
 
@@ -361,6 +363,7 @@ def analyzeProbes(db):
     
     for strim in range(0,num_sent):
         for rtrim in range(0,num_rcvd):
+            #print(strim,rtrim)
             if strim == 0 and rtrim == 0:
                 continue # no point in doing 0,0 again
             for probe_id,packets in packet_cache:

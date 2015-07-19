@@ -80,27 +80,30 @@ short_overtime.sort()
 long_overtime.sort()
 diff_overtime.sort()
 
+print('packet_rtt diff mean: %f' % statistics.mean(diffs))
 print('packet_rtt diff median: %f' % statistics.median(diffs))
 print('packet_rtt diff midhinge: %f' % midsummary(diffs))
 print('packet_rtt diff trimean: %f' % trimean(diffs))
 print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
 print('packet_rtt diff ubersummary: %f' % ubersummary(diffs))
+print('packet_rtt diff septasummary: %f' % septasummary(diffs))
 print('packet_rtt diff MAD: %f' % mad(diffs))
 try:
     print('reported diff trimean: %f' % trimean(reported_diffs))
     print('reported diff quadsummary: %f' % quadsummary(reported_diffs))
     print('reported diff ubersummary: %f' % ubersummary(reported_diffs))
+    print('reported diff septasummary: %f' % septasummary(reported_diffs))
     print('reported diff MAD: %f' % mad(reported_diffs))
 
-    import cProfile
-    start = time.time()
-    kresults = kfilter({},diffs)
+    #import cProfile
+    #start = time.time()
+    #kresults = kfilter({},diffs)
     #print('packet_rtt diff kfilter: ', numpy.mean(kresults['est']), kresults['var'])
-    print('packet_rtt diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
-    kresults = kfilter({},reported_diffs)
+    #print('packet_rtt diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+    #kresults = kfilter({},reported_diffs)
     #print('reported diff kfilter: ', numpy.mean(kresults['est']), kresults['var'][-1])
-    print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
-    print("kfilter time: %f" % (time.time()-start))
+    #print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+    #print("kfilter time: %f" % (time.time()-start))
 except:
     pass
 
@@ -110,9 +113,353 @@ except:
 #print('tsval null diff weighted mean: %f' % tsvalwmean(db.subseries('train_null','long')))
 
 
+
+
+def testKalman4D(params=None):
+    from pykalman import KalmanFilter
+    train = db.subseries('train','long', offset=0)
+    test = db.subseries('test','long', offset=0)
+    null = db.subseries('train_null','long', offset=0)
+    measurements = numpy.asarray([(s['unusual_packet'],s['other_packet'],s['unusual_tsval'],s['other_tsval']) for s in (train+test)])
+    null_measurements = numpy.asarray([(s['unusual_packet'],s['other_packet'],s['unusual_tsval'],s['other_tsval']) for s in null])
+    
+    if params == None:
+        kf = KalmanFilter(n_dim_obs=4, n_dim_state=4,
+                          initial_state_mean=[quadsummary([s['unusual_packet'] for s in train]),
+                                              quadsummary([s['other_packet'] for s in train]),
+                                              numpy.mean([s['unusual_tsval'] for s in train]),
+                                              numpy.mean([s['other_tsval'] for s in train])])
+        kf = KalmanFilter(n_dim_obs=4, n_dim_state=4)
+        
+        start=time.time()
+        kf = kf.em(measurements[0:len(train)]+null_measurements[0:50000], n_iter=10,
+                   em_vars=('transition_matrices',
+                            'observation_matrices',
+                            'transition_offsets',
+                            'observation_offsets',
+                            'transition_covariance',
+                            'observation_covariance',
+                            'initial_state_mean',
+                            'initial_state_covariance'))
+        params = {'transition_matrices': kf.transition_matrices.tolist(),
+                  'observation_matrices': kf.observation_matrices.tolist(),
+                  'transition_offsets': kf.transition_offsets.tolist(),
+                  'observation_offsets': kf.observation_offsets.tolist(),
+                  'transition_covariance': kf.transition_covariance.tolist(),
+                  'observation_covariance': kf.observation_covariance.tolist(),
+                  'initial_state_mean': kf.initial_state_mean.tolist(),
+                  'initial_state_covariance': kf.initial_state_covariance.tolist()}
+        print("Learned Params:\n")
+        import pprint
+        pprint.pprint(params)
+        print("pykalman em time: %f" % (time.time()-start))
+        
+    #kf = KalmanFilter(n_dim_obs=2, n_dim_state=2, **params)
+
+    num_obs=5000
+    for offset in range(50000,100000+num_obs,num_obs):
+        start=time.time()
+        m = measurements[offset:offset+num_obs]
+        #params['initial_state_mean']=[quadsummary([s[0] for s in m]),
+        #                              quadsummary([s[1] for s in m]),
+        #                              numpy.mean([s[2] for s in m]),
+        #                              numpy.mean([s[3] for s in m])]
+        kf = KalmanFilter(n_dim_obs=4, n_dim_state=4, **params)
+        (smoothed_state_means, smoothed_state_covariances) = kf.smooth(m)
+        #print("pykalman smooth time: %f" % (time.time()-start))
+        up = numpy.mean([m[0] for m in smoothed_state_means])
+        op = numpy.mean([m[1] for m in smoothed_state_means])
+        #print("packet_rtt pykalman final:", smoothed_state_means[-1][0]-smoothed_state_means[-1][1])
+        print("packet_rtt pykalman mean:", up-op)
+        print("packet_rtt mean:", numpy.mean([s[0]-s[1] for s in m]))
+        #up = numpy.mean([m[2] for m in smoothed_state_means])
+        #op = numpy.mean([m[3] for m in smoothed_state_means])
+        #print("tsval_rtt pykalman final:", smoothed_state_means[-1][2]-smoothed_state_means[-1][3])
+        #print("tsval_rtt pykalman mean:", up-op)
+        #print("tsval_rtt mean:", numpy.mean([s[2]-s[3] for s in m]))
+
+    for offset in range(0,len(null_measurements)+num_obs,num_obs):
+        start=time.time()
+        m = null_measurements[offset:offset+num_obs]
+        #params['initial_state_mean']=[quadsummary([s[0] for s in m]),
+        #                              quadsummary([s[1] for s in m]),
+        #                              numpy.mean([s[2] for s in m]),
+        #                              numpy.mean([s[3] for s in m])]
+        kf = KalmanFilter(n_dim_obs=4, n_dim_state=4, **params)
+        (smoothed_state_means, smoothed_state_covariances) = kf.smooth(m)
+        up = numpy.mean([m[0] for m in smoothed_state_means])
+        op = numpy.mean([m[1] for m in smoothed_state_means])
+        #print("null packet_rtt pykalman final:", smoothed_state_means[-1][0]-smoothed_state_means[-1][1])
+        print("null packet_rtt pykalman mean:", up-op)
+        print("null packet_rtt mean:", numpy.mean([s[0]-s[1] for s in m]))
+        #up = numpy.mean([m[2] for m in smoothed_state_means])
+        #op = numpy.mean([m[3] for m in smoothed_state_means])
+        #print("null tsval_rtt pykalman final:", smoothed_state_means[-1][2]-smoothed_state_means[-1][3])
+        #print("null tsval_rtt pykalman mean:", up-op)
+        #print("null tsval_rtt mean:", numpy.mean([s[2]-s[3] for s in m]))
+
+        
+
+echo_vm_5k={'initial_state_covariance': [[33599047.5,
+                               -18251285.25,
+                               3242535690.59375,
+                               -8560730487.84375],
+                              [-18251285.25,
+                               9914252.3125,
+                               -1761372688.59375,
+                               4650260880.1875],
+                              [3242535690.59375,
+                               -1761372688.59375,
+                               312926663745.03125,
+                               -826168494791.7188],
+                              [-8560730487.84375,
+                               4650260880.1875,
+                               -826168494791.7188,
+                               2181195982530.4688]],
+ 'initial_state_mean': [12939012.5625,
+                        12934563.71875,
+                        13134751.608,
+                        13138990.9985],
+ 'observation_covariance': [[11960180434.411114,
+                             4760272534.795976,
+                             8797551081.431936,
+                             6908794128.927051],
+                            [4760272534.795962,
+                             12383598172.428213,
+                             5470747537.2599745,
+                             11252625555.297853],
+                            [8797551081.431955,
+                             5470747537.2601185,
+                             1466222848395.7058,
+                             72565713883.12643],
+                            [6908794128.927095,
+                             11252625555.297981,
+                             72565713883.12654,
+                             1519760903943.507]],
+ 'observation_matrices': [[1.4255288693095167,
+                           -0.4254638445329988,
+                           0.0003406844036817347,
+                           -0.0005475021956726778],
+                          [-0.46467270827589857,
+                           1.4654311778340343,
+                           -0.0003321330280128265,
+                           -0.0002853945703691352],
+                          [-0.2644570970067974,
+                           -0.33955835481495455,
+                           1.7494161615202275,
+                           -0.15394117603733548],
+                          [-0.3419097544041847,
+                           -0.23992883666045373,
+                           -0.15587790880447727,
+                           1.7292393175137022]],
+ 'observation_offsets': [165.2279084503762,
+                         157.76807691937614,
+                         168.4235495099334,
+                         225.33433430227353],
+ 'transition_covariance': [[2515479496.145993,
+                            -401423541.70620924,
+                            1409951418.1627903,
+                            255932902.74454522],
+                           [-401423541.706214,
+                            2744353887.676857,
+                            1162316.2019491254,
+                            1857251491.3987627],
+                           [1409951418.1628358,
+                            1162316.2020361447,
+                            543279068599.8229,
+                            -39399311190.5746],
+                           [255932902.74459982,
+                            1857251491.398838,
+                            -39399311190.574585,
+                            537826124257.5266]],
+ 'transition_matrices': [[0.52163952865412,
+                          0.47872618354122665,
+                          -0.0004322286766109684,
+                          0.00017293351811531466],
+                         [0.5167436693545113,
+                          0.48319044922845933,
+                          7.765428142114672e-05,
+                          -0.00021518950285326355],
+                         [0.2091705950622469,
+                          0.41051399729482796,
+                          0.19341113299389256,
+                          0.19562916616052917],
+                         [0.368592004009912,
+                          0.22263632461118732,
+                          0.20756792378812872,
+                          0.20977025833570906]],
+ 'transition_offsets': [592.5708159274,
+                        583.3804671015271,
+                        414.4187239098291,
+                        562.166786712371]}
+
+echo_vm_5k={'initial_state_covariance': [[0.375, 0.0, 0.0, 0.0],
+                              [0.0, 0.375, 0.0, 0.0],
+                              [0.0, 0.0, 0.375, 0.0],
+                              [0.0, 0.0, 0.0, 0.375]],
+ 'initial_state_mean': [15997944.198361743,
+                        16029825.435899183,
+                        17093077.26228404,
+                        17524263.088803563],
+ 'observation_covariance': [[36572556646.179054,
+                             21816054953.37006,
+                             31144379008.310543,
+                             19651005729.823025],
+                            [21816054953.372543,
+                             440428106325.20325,
+                             41103447776.740585,
+                             427146570672.51227],
+                            [31144379008.31037,
+                             41103447776.74027,
+                             3280009435458.6953,
+                             458734528073.65686],
+                            [19651005729.82234,
+                             427146570672.5109,
+                             458734528073.6557,
+                             3769493190697.773]],
+ 'observation_matrices': [[1.0248853427592337,
+                           -0.031198859962501047,
+                           0.001613706836380402,
+                           0.004720209443291878],
+                          [-0.8604422900368718,
+                           1.8583369609057172,
+                           -0.0022646214457040514,
+                           0.004437933935378169],
+                          [-0.5814771409524866,
+                           0.22228184387142846,
+                           1.6259599749174072,
+                           -0.271594798325566],
+                          [-0.5862601003257453,
+                           0.2598285939005791,
+                           -0.28286590143513024,
+                           1.604087079832425]],
+ 'observation_offsets': [1979.4518332096984,
+                         1889.3380163762793,
+                         2132.9112026744906,
+                         1750.7759421584785],
+ 'transition_covariance': [[6176492087.271547,
+                            762254719.4171592,
+                            4584288694.652873,
+                            3044796192.4357214],
+                           [762254719.4185101,
+                            173302376079.4761,
+                            5261303152.757347,
+                            167562483383.9925],
+                           [4584288694.651718,
+                            5261303152.755746,
+                            1056156956874.4131,
+                            -115859156952.07962],
+                           [3044796192.434162,
+                            167562483383.9901,
+                            -115859156952.08018,
+                            1225788436266.3086]],
+ 'transition_matrices': [[0.9673912485796876,
+                          0.03252962227543321,
+                          0.0006756067792537124,
+                          -0.0006566638567164773],
+                         [0.9548761966068113,
+                          0.03841774395880293,
+                          0.00426067282319309,
+                          0.002303362691861821],
+                         [0.6215040230859188,
+                          -0.2584476837756142,
+                          0.3176491193420503,
+                          0.3241682768126566],
+                         [0.6634028281470279,
+                          -0.33548335246018723,
+                          0.3298144902195048,
+                          0.3475836278392421]],
+ 'transition_offsets': [1751.3049487348183,
+                        1764.989515773476,
+                        1986.8405778425586,
+                        2232.830254345267]}
+#testKalman4D(echo_vm_5k)
+
+
+
+def testKalman(params=None):
+    from pykalman import AdditiveUnscentedKalmanFilter,KalmanFilter
+    train = db.subseries('train','long', offset=0)
+    test = db.subseries('test','long', offset=0)
+    measurements = numpy.asarray([(s['unusual_packet'],s['other_packet']) for s in (train+test)])
+
+    #kf = KalmanFilter(transition_matrices = [[1, 1], [0, 1]], observation_matrices = [[0.1, 0.5], [-0.3, 0.0]])
+    kf = KalmanFilter(n_dim_obs=2, n_dim_state=2,
+                      initial_state_mean=[quadsummary([s['unusual_packet'] for s in train]),
+                                          quadsummary([s['other_packet'] for s in train])])
+    #kf = AdditiveUnscentedKalmanFilter(n_dim_obs=2, n_dim_state=2)
+
+    if params == None:
+        start=time.time()
+        kf = kf.em(measurements[0:len(train)], n_iter=10,
+                   em_vars=('transition_matrices',
+                            'observation_matrices',
+                            'transition_offsets',
+                            'observation_offsets',
+                            'transition_covariance',
+                            'observation_covariance',
+                            'initial_state_covariance'))
+        params = {'transition_matrices': kf.transition_matrices.tolist(),
+                  'observation_matrices': kf.observation_matrices.tolist(),
+                  'transition_offsets': kf.transition_offsets.tolist(),
+                  'observation_offsets': kf.observation_offsets.tolist(),
+                  'transition_covariance': kf.transition_covariance.tolist(),
+                  'observation_covariance': kf.observation_covariance.tolist(),
+                  'initial_state_mean': kf.initial_state_mean.tolist(),
+                  'initial_state_covariance': kf.initial_state_covariance.tolist()}
+        print("Learned Params:\n")
+        import pprint
+        pprint.pprint(params)
+        print("pykalman em time: %f" % (time.time()-start))
+        
+    #kf = KalmanFilter(n_dim_obs=2, n_dim_state=2, **params)
+
+    num_obs=10000
+    for offset in range(50000,100000+num_obs,num_obs):
+        start=time.time()
+        kf = KalmanFilter(n_dim_obs=2, n_dim_state=2, **params)
+        m = measurements[offset:offset+num_obs]
+        (smoothed_state_means, smoothed_state_covariances) = kf.smooth(m)
+        print("pykalman smooth time: %f" % (time.time()-start))
+        up = numpy.mean([m[0] for m in smoothed_state_means])
+        op = numpy.mean([m[1] for m in smoothed_state_means])
+        print("packet_rtt pykalman final:", smoothed_state_means[-1][0]-smoothed_state_means[-1][1])
+        print("packet_rtt pykalman mean:", up-op)
+        print("packet_rtt mean:", numpy.mean([s[0]-s[1] for s in m]))
+
+
+five_iter = {'observation_offsets': [-54.53185823, -55.25219184],
+            'observation_covariance': [[  1.15059170e+10,   4.36743765e+09],
+                                       [  4.36743765e+09,   1.19410313e+10]],
+            'initial_state_mean': [ 12939012.5625 ,  12934563.71875],
+            'transition_covariance': [[  2.98594543e+09,   6.86355073e+07],
+                                      [  6.86355073e+07,   3.21368699e+09]],
+            'initial_state_covariance': [[  2.36836696e+09,   1.63195635e+09],
+                                         [  1.63195635e+09,   1.12452233e+09]],
+            'transition_offsets': [ 343.69740217,  338.5042467 ],
+            'observation_matrices': [[ 1.42539895, -0.4255261 ],
+                                     [-0.46280375,  1.46295189]],
+            'transition_matrices': [[ 0.56151623,  0.4385931 ],
+                                    [ 0.47309189,  0.52673508]]}
+ten_iter = {'initial_state_covariance': [[229936928.28125, 41172601.0],
+                                         [41172601.0, 7372383.46875]],
+            'initial_state_mean': [12939012.5625, 12934563.71875],
+            'observation_covariance': [[11958914107.88334, 4761048283.066559],
+                                       [4761048283.066557, 12388186543.42032]],
+            'observation_matrices': [[1.4258395826727792, -0.42598392357467674],
+                                     [-0.4647443890462455, 1.4648767294384015]],
+            'observation_offsets': [165.409715349344, 157.96206130876212],
+            'transition_covariance': [[2515594742.7187943, -401728959.41375697],
+                                      [-401728959.41375697, 2743831805.402682]],
+            'transition_matrices': [[0.521306461057975, 0.47879632652984583],
+                                    [0.5167881285851763, 0.483006520280469]],
+            'transition_offsets': [592.4419187566978, 583.2272403965366]}
+#testKalman(ten_iter)
+
+
 def getTCPTSPrecision():
     cursor = db.conn.cursor()
-    query="""SELECT tcpts_mean FROM meta;"""
+    query="""SELECT tcpts_mean FROM meta"""
     cursor.execute(query)
     row = cursor.fetchone()
     if row:
@@ -169,38 +516,10 @@ def tsFilteredHistogram():
     plt.show()
     #plt.savefig('paper/graphs/dists-vs-dist-of-diffs2.svg')
 
-tsFilteredHistogram()
-sys.exit(0)
+#tsFilteredHistogram()
 
 
-from pykalman import KalmanFilter
-#kf = KalmanFilter(transition_matrices = [[1, 1], [0, 1]], observation_matrices = [[0.1, 0.5], [-0.3, 0.0]])
-kf = KalmanFilter(transition_matrices = [[1, 0], [0, 1]], n_dim_obs=2, observation_matrices = [[1.0, 0], [0, 1.0]])
 
-#delta = 1e-5
-#trans_cov = delta / (1 - delta) * np.eye(2)
-
-#kf = KalmanFilter(n_dim_obs=2, n_dim_state=2,
-#                  initial_state_mean=np.zeros(2),
-#                  initial_state_covariance=np.ones((2, 2)),
-#                  transition_matrices=np.eye(2),
-#                  observation_matrices=obs_mat,
-#                  observation_covariance=1.0,
-#                  transition_covariance=trans_cov)
-
-
-#measurements = numpy.asarray([[1,0], [0,0], [0,1]])  # 3 observations
-measurements = numpy.asarray([(s['unusual_packet'],s['other_packet']) for s in (db.subseries('train','long')+db.subseries('test','long'))])
-kf = kf.em(measurements, n_iter=5)
-#(filtered_state_means, filtered_state_covariances) = kf.filter(measurements)
-#print("packet_rtt pykalman:", filtered_state_means[-1][0]-filtered_state_means[-1][1])
-#print("packet_rtt pykalman:", filtered_state_means[-1])
-
-(smoothed_state_means, smoothed_state_covariances) = kf.smooth(measurements)
-#up = numpy.mean([m[0] for m in smoothed_state_means])
-#op = numpy.mean([m[1] for m in smoothed_state_means])
-print("packet_rtt pykalman:", smoothed_state_means[-1], smoothed_state_means[-1][0]-smoothed_state_means[-1][1])
-#print("packet_rtt pykalman:", up, op, up-op)
 
 
 #all_data = longs+shorts
@@ -266,6 +585,7 @@ def graphTestResults():
     for c in cursor:
         classifiers.append(c[0])
 
+    max_obs = 0
     for classifier in classifiers:
         query="""
         SELECT params FROM classifier_results 
@@ -303,6 +623,7 @@ def graphTestResults():
         num_obs = []
         performance = []
         for row in cursor:
+            max_obs = max(max_obs, row[0])
             num_obs.append(row[0])
             performance.append(row[1])
         #print(num_obs,performance)
@@ -312,6 +633,7 @@ def graphTestResults():
         color_id = (color_id+1) % len(colors)
 
     plt.legend([l[1] for l in legend], [l[0] for l in legend], scatterpoints=1, fontsize='xx-small')
+    plt.plot([0, max_obs], [5.0, 5.0], "k--")
     plt.show()
         
 graphTestResults()

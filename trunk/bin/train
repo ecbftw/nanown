@@ -54,7 +54,7 @@ def trainClassifier(db, unusual_case, greater, classifier, retrain=False):
     
     trainer = classifiers[classifier]['train']
     threshold = 5.0 # in percent
-    num_obs = 1000
+    num_obs = 7
     max_obs = int(db.populationSize('train')/5)
     result = None
     while num_obs < max_obs:
@@ -74,7 +74,7 @@ def trainClassifier(db, unusual_case, greater, classifier, retrain=False):
         db.addClassifierResult(result)
         classifiers[classifier]['train_results'].append(result)
 
-        if error < threshold:
+        if error < threshold and num_obs > 100:
             break
 
     return result

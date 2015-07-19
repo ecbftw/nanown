@@ -165,6 +165,17 @@ def quadsummary(values, distance=25):
     return (l1+l2+r2+r1)/4.0
     #return statistics.mean((l1,l2,l3,m,r3,r2,r1))
 
+    
+def septasummary(values, distance=25):
+    left2 = 50-distance
+    left3 = 50-(distance/2.0)
+    left1 = left2/2.0
+    right2 = 50+distance
+    right3 = 50+(distance/2.0)
+    right1 = (right2+100)/2.0
+    l1,l2,l3,m,r3,r2,r1 = numpy.percentile(values, (left1,left2,left3,50,right3,right2,right1))
+    return (l1+l2+l3+m+r3+r2+r1)/7.0
+
 
 def tsvalwmean(subseries):
     weights = [(s['unusual_packet']+s['other_packet'])**2 for s in subseries]
@@ -253,6 +264,7 @@ midsummaryTest = functools.partial(summaryTest, midsummary)
 trimeanTest = functools.partial(summaryTest, trimean)
 ubersummaryTest = functools.partial(summaryTest, ubersummary)
 quadsummaryTest = functools.partial(summaryTest, quadsummary)
+septasummaryTest = functools.partial(summaryTest, septasummary)
 
 def rmse(expected, measurements):
     s = sum([(expected-m)**2 for m in measurements])/len(measurements)
@@ -326,3 +338,27 @@ def tsvalwmeanTest(params, greater, samples):
             return 1
         else:
             return 0
+
+
+from pykalman import KalmanFilter
+def pyKalman4DTest(params, greater, samples):
+    kp = params['kparams']
+    #kp['initial_state_mean']=[quadsummary([s['unusual_packet'] for s in samples]),
+    #                          quadsummary([s['other_packet'] for s in samples]),
+    #                          numpy.mean([s['unusual_tsval'] for s in samples]),
+    #                          numpy.mean([s['other_tsval'] for s in samples])]
+    kf = KalmanFilter(n_dim_obs=4, n_dim_state=4, **kp)
+    smooth,covariance = kf.smooth([(s['unusual_packet'],s['other_packet'],s['unusual_tsval'],s['other_tsval'])
+                                   for s in samples])
+    m = numpy.mean(smooth)
+    if greater:
+        if m > params['threshold']:
+            return 1
+        else:
+            return 0
+    else:
+        if m < params['threshold']:
+            return 1
+        else:
+            return 0
+    
