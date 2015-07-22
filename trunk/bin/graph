@@ -73,46 +73,83 @@ reported_diffs = list(differences(db, 'long', 'reported'))
 #shorts = [s['packet_rtt'] for s in samples.values() if s['test_case']=='short']
 #longs = [s['packet_rtt'] for s in samples.values() if s['test_case']=='long']
 
-short_overtime = [(sample['time_of_day'],sample['short']) for sample in timeSeries(db,'train','short')]
-long_overtime = [(sample['time_of_day'],sample['long']) for sample in timeSeries(db,'train','long')]
-diff_overtime = [(sample['time_of_day'],sample['long']-sample['other_cases']) for sample in timeSeries(db,'train','long')]
-short_overtime.sort()
-long_overtime.sort()
-diff_overtime.sort()
 
-print('packet_rtt diff mean: %f' % statistics.mean(diffs))
-print('packet_rtt diff median: %f' % statistics.median(diffs))
-print('packet_rtt diff midhinge: %f' % midsummary(diffs))
-print('packet_rtt diff trimean: %f' % trimean(diffs))
-print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
-print('packet_rtt diff ubersummary: %f' % ubersummary(diffs))
-print('packet_rtt diff septasummary: %f' % septasummary(diffs))
-print('packet_rtt diff MAD: %f' % mad(diffs))
-try:
-    print('reported diff trimean: %f' % trimean(reported_diffs))
-    print('reported diff quadsummary: %f' % quadsummary(reported_diffs))
-    print('reported diff ubersummary: %f' % ubersummary(reported_diffs))
-    print('reported diff septasummary: %f' % septasummary(reported_diffs))
-    print('reported diff MAD: %f' % mad(reported_diffs))
+def basicStatistics():
+    print('packet_rtt diff mean: %f' % statistics.mean(diffs))
+    print('packet_rtt diff median: %f' % statistics.median(diffs))
+    print('packet_rtt diff midhinge: %f' % midsummary(diffs))
+    print('packet_rtt diff trimean: %f' % trimean(diffs))
+    print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
+    print('packet_rtt diff ubersummary: %f' % ubersummary(diffs))
+    print('packet_rtt diff septasummary: %f' % septasummary(diffs))
+    print('packet_rtt diff MAD: %f' % mad(diffs))
+    try:
+        print('reported diff trimean: %f' % trimean(reported_diffs))
+        print('reported diff quadsummary: %f' % quadsummary(reported_diffs))
+        print('reported diff ubersummary: %f' % ubersummary(reported_diffs))
+        print('reported diff septasummary: %f' % septasummary(reported_diffs))
+        print('reported diff MAD: %f' % mad(reported_diffs))
 
-    #import cProfile
-    #start = time.time()
-    #kresults = kfilter({},diffs)
-    #print('packet_rtt diff kfilter: ', numpy.mean(kresults['est']), kresults['var'])
-    #print('packet_rtt diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
-    #kresults = kfilter({},reported_diffs)
-    #print('reported diff kfilter: ', numpy.mean(kresults['est']), kresults['var'][-1])
-    #print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
-    #print("kfilter time: %f" % (time.time()-start))
-except:
-    pass
+        #import cProfile
+        #start = time.time()
+        #kresults = kfilter({},diffs)
+        #print('packet_rtt diff kfilter: ', numpy.mean(kresults['est']), kresults['var'])
+        #print('packet_rtt diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+        #kresults = kfilter({},reported_diffs)
+        #print('reported diff kfilter: ', numpy.mean(kresults['est']), kresults['var'][-1])
+        #print('reported diff kfilter: ', kresults['est'][-1], kresults['var'][-1])
+        #print("kfilter time: %f" % (time.time()-start))
+    except:
+        pass
 
-#print('tsval diff mean: %f' % numpy.mean(differences(db, 'long', 'tsval')))
-#print('tsval null diff mean: %f' % numpy.mean(null_differences(db, 'long', 'tsval')))
-#print('tsval diff weighted mean: %f' % tsvalwmean(db.subseries('train','long')+db.subseries('test','long')))
-#print('tsval null diff weighted mean: %f' % tsvalwmean(db.subseries('train_null','long')))
+    #print('tsval diff mean: %f' % numpy.mean(differences(db, 'long', 'tsval')))
+    #print('tsval null diff mean: %f' % numpy.mean(null_differences(db, 'long', 'tsval')))
+    #print('tsval diff weighted mean: %f' % tsvalwmean(db.subseries('train','long')+db.subseries('test','long')))
+    #print('tsval null diff weighted mean: %f' % tsvalwmean(db.subseries('train_null','long')))
 
 
+
+def exampleBoxTestHistogram(low,high):
+    num_bins = 300
+    all = db.subseries('train','long')+db.subseries('test','long')
+    s   = [s['other_packet'] for s in all]
+    l   = [s['unusual_packet'] for s in all]
+
+    s_low,s_high = numpy.percentile(s, (low,high))
+    l_low,l_high = numpy.percentile(l, (low,high))
+
+    s.sort()
+    cut_off_low = s[int(len(diffs)*0.002)]
+    cut_off_high = s[int(len(diffs)*0.998)]
+    
+    plt.clf()
+    # the histogram of the data
+    #n, bins, patches = plt.hist(s, num_bins, normed=1, color='blue', histtype='step', alpha=0.8,
+    #                            label='Test Case 1')
+    #n, bins, patches = plt.hist(l, num_bins, normed=1, color='red', histtype='step', alpha=0.8,
+    #                            label='Test Case 2')
+    #
+    n, bins, patches = plt.hist((s,l), num_bins, normed=1, color=('blue','red'), histtype='step', alpha=0.8,
+                                 label=('Test Case 1','Test Case 2'), range=(cut_off_low,cut_off_high))
+
+    from matplotlib.patches import FancyBboxPatch
+    currentAxis = plt.gca()
+    currentAxis.add_patch(FancyBboxPatch((s_low, 0), s_high-s_low, 0.0001, boxstyle='square', facecolor="blue", alpha=0.4))
+    currentAxis.add_patch(FancyBboxPatch((l_low, 0), l_high-l_low, 0.0001, boxstyle='square', facecolor="red", alpha=0.4))
+
+    
+    plt.xlabel('RTT Difference')
+    plt.ylabel('Probability')
+    #plt.title(r'Box Test Example - Overlapping Boxes')
+
+    # Tweak spacing to prevent clipping of ylabel
+    plt.subplots_adjust(left=0.15)
+    plt.legend()
+    plt.show()
+    #plt.savefig('paper/graphs/dists-vs-dist-of-diffs2.svg')
+
+
+#exampleBoxTestHistogram(6,8)
 
 
 def testKalman4D(params=None):
@@ -199,180 +236,6 @@ def testKalman4D(params=None):
         #print("null tsval_rtt mean:", numpy.mean([s[2]-s[3] for s in m]))
 
         
-
-echo_vm_5k={'initial_state_covariance': [[33599047.5,
-                               -18251285.25,
-                               3242535690.59375,
-                               -8560730487.84375],
-                              [-18251285.25,
-                               9914252.3125,
-                               -1761372688.59375,
-                               4650260880.1875],
-                              [3242535690.59375,
-                               -1761372688.59375,
-                               312926663745.03125,
-                               -826168494791.7188],
-                              [-8560730487.84375,
-                               4650260880.1875,
-                               -826168494791.7188,
-                               2181195982530.4688]],
- 'initial_state_mean': [12939012.5625,
-                        12934563.71875,
-                        13134751.608,
-                        13138990.9985],
- 'observation_covariance': [[11960180434.411114,
-                             4760272534.795976,
-                             8797551081.431936,
-                             6908794128.927051],
-                            [4760272534.795962,
-                             12383598172.428213,
-                             5470747537.2599745,
-                             11252625555.297853],
-                            [8797551081.431955,
-                             5470747537.2601185,
-                             1466222848395.7058,
-                             72565713883.12643],
-                            [6908794128.927095,
-                             11252625555.297981,
-                             72565713883.12654,
-                             1519760903943.507]],
- 'observation_matrices': [[1.4255288693095167,
-                           -0.4254638445329988,
-                           0.0003406844036817347,
-                           -0.0005475021956726778],
-                          [-0.46467270827589857,
-                           1.4654311778340343,
-                           -0.0003321330280128265,
-                           -0.0002853945703691352],
-                          [-0.2644570970067974,
-                           -0.33955835481495455,
-                           1.7494161615202275,
-                           -0.15394117603733548],
-                          [-0.3419097544041847,
-                           -0.23992883666045373,
-                           -0.15587790880447727,
-                           1.7292393175137022]],
- 'observation_offsets': [165.2279084503762,
-                         157.76807691937614,
-                         168.4235495099334,
-                         225.33433430227353],
- 'transition_covariance': [[2515479496.145993,
-                            -401423541.70620924,
-                            1409951418.1627903,
-                            255932902.74454522],
-                           [-401423541.706214,
-                            2744353887.676857,
-                            1162316.2019491254,
-                            1857251491.3987627],
-                           [1409951418.1628358,
-                            1162316.2020361447,
-                            543279068599.8229,
-                            -39399311190.5746],
-                           [255932902.74459982,
-                            1857251491.398838,
-                            -39399311190.574585,
-                            537826124257.5266]],
- 'transition_matrices': [[0.52163952865412,
-                          0.47872618354122665,
-                          -0.0004322286766109684,
-                          0.00017293351811531466],
-                         [0.5167436693545113,
-                          0.48319044922845933,
-                          7.765428142114672e-05,
-                          -0.00021518950285326355],
-                         [0.2091705950622469,
-                          0.41051399729482796,
-                          0.19341113299389256,
-                          0.19562916616052917],
-                         [0.368592004009912,
-                          0.22263632461118732,
-                          0.20756792378812872,
-                          0.20977025833570906]],
- 'transition_offsets': [592.5708159274,
-                        583.3804671015271,
-                        414.4187239098291,
-                        562.166786712371]}
-
-echo_vm_5k={'initial_state_covariance': [[0.375, 0.0, 0.0, 0.0],
-                              [0.0, 0.375, 0.0, 0.0],
-                              [0.0, 0.0, 0.375, 0.0],
-                              [0.0, 0.0, 0.0, 0.375]],
- 'initial_state_mean': [15997944.198361743,
-                        16029825.435899183,
-                        17093077.26228404,
-                        17524263.088803563],
- 'observation_covariance': [[36572556646.179054,
-                             21816054953.37006,
-                             31144379008.310543,
-                             19651005729.823025],
-                            [21816054953.372543,
-                             440428106325.20325,
-                             41103447776.740585,
-                             427146570672.51227],
-                            [31144379008.31037,
-                             41103447776.74027,
-                             3280009435458.6953,
-                             458734528073.65686],
-                            [19651005729.82234,
-                             427146570672.5109,
-                             458734528073.6557,
-                             3769493190697.773]],
- 'observation_matrices': [[1.0248853427592337,
-                           -0.031198859962501047,
-                           0.001613706836380402,
-                           0.004720209443291878],
-                          [-0.8604422900368718,
-                           1.8583369609057172,
-                           -0.0022646214457040514,
-                           0.004437933935378169],
-                          [-0.5814771409524866,
-                           0.22228184387142846,
-                           1.6259599749174072,
-                           -0.271594798325566],
-                          [-0.5862601003257453,
-                           0.2598285939005791,
-                           -0.28286590143513024,
-                           1.604087079832425]],
- 'observation_offsets': [1979.4518332096984,
-                         1889.3380163762793,
-                         2132.9112026744906,
-                         1750.7759421584785],
- 'transition_covariance': [[6176492087.271547,
-                            762254719.4171592,
-                            4584288694.652873,
-                            3044796192.4357214],
-                           [762254719.4185101,
-                            173302376079.4761,
-                            5261303152.757347,
-                            167562483383.9925],
-                           [4584288694.651718,
-                            5261303152.755746,
-                            1056156956874.4131,
-                            -115859156952.07962],
-                           [3044796192.434162,
-                            167562483383.9901,
-                            -115859156952.08018,
-                            1225788436266.3086]],
- 'transition_matrices': [[0.9673912485796876,
-                          0.03252962227543321,
-                          0.0006756067792537124,
-                          -0.0006566638567164773],
-                         [0.9548761966068113,
-                          0.03841774395880293,
-                          0.00426067282319309,
-                          0.002303362691861821],
-                         [0.6215040230859188,
-                          -0.2584476837756142,
-                          0.3176491193420503,
-                          0.3241682768126566],
-                         [0.6634028281470279,
-                          -0.33548335246018723,
-                          0.3298144902195048,
-                          0.3475836278392421]],
- 'transition_offsets': [1751.3049487348183,
-                        1764.989515773476,
-                        1986.8405778425586,
-                        2232.830254345267]}
 #testKalman4D(echo_vm_5k)
 
 
@@ -428,32 +291,6 @@ def testKalman(params=None):
         print("packet_rtt mean:", numpy.mean([s[0]-s[1] for s in m]))
 
 
-five_iter = {'observation_offsets': [-54.53185823, -55.25219184],
-            'observation_covariance': [[  1.15059170e+10,   4.36743765e+09],
-                                       [  4.36743765e+09,   1.19410313e+10]],
-            'initial_state_mean': [ 12939012.5625 ,  12934563.71875],
-            'transition_covariance': [[  2.98594543e+09,   6.86355073e+07],
-                                      [  6.86355073e+07,   3.21368699e+09]],
-            'initial_state_covariance': [[  2.36836696e+09,   1.63195635e+09],
-                                         [  1.63195635e+09,   1.12452233e+09]],
-            'transition_offsets': [ 343.69740217,  338.5042467 ],
-            'observation_matrices': [[ 1.42539895, -0.4255261 ],
-                                     [-0.46280375,  1.46295189]],
-            'transition_matrices': [[ 0.56151623,  0.4385931 ],
-                                    [ 0.47309189,  0.52673508]]}
-ten_iter = {'initial_state_covariance': [[229936928.28125, 41172601.0],
-                                         [41172601.0, 7372383.46875]],
-            'initial_state_mean': [12939012.5625, 12934563.71875],
-            'observation_covariance': [[11958914107.88334, 4761048283.066559],
-                                       [4761048283.066557, 12388186543.42032]],
-            'observation_matrices': [[1.4258395826727792, -0.42598392357467674],
-                                     [-0.4647443890462455, 1.4648767294384015]],
-            'observation_offsets': [165.409715349344, 157.96206130876212],
-            'transition_covariance': [[2515594742.7187943, -401728959.41375697],
-                                      [-401728959.41375697, 2743831805.402682]],
-            'transition_matrices': [[0.521306461057975, 0.47879632652984583],
-                                    [0.5167881285851763, 0.483006520280469]],
-            'transition_offsets': [592.4419187566978, 583.2272403965366]}
 #testKalman(ten_iter)
 
 
@@ -474,41 +311,49 @@ def tsFilteredHistogram():
     all = db.subseries('train','long')+db.subseries('test','long')
     diffs     = [s['unusual_packet']-s['other_packet'] for s in all]
     ts0_diffs = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']-s['other_tsval'] == 0]
-    ts1_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(s['unusual_tsval']-s['other_tsval']) > 0]
-    ts2_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(round((s['unusual_tsval']-s['other_tsval'])/tcpts_precision)) <= 1.0]
+    #ts1_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(s['unusual_tsval']-s['other_tsval']) > 0]
+    #ts2_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(round((s['unusual_tsval']-s['other_tsval'])/tcpts_precision)) <= 1.0]
+    ts1_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(int(round((s['unusual_tsval']-s['other_tsval'])/tcpts_precision))) == 1]
+    ts2_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(int(round((s['unusual_tsval']-s['other_tsval'])/tcpts_precision))) >= 2]
+    #ts3_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(int(round((s['unusual_tsval']-s['other_tsval'])/tcpts_precision))) == 3]
+    #ts4_diffs = [s['unusual_packet']-s['other_packet'] for s in all if abs(int(round((s['unusual_tsval']-s['other_tsval'])/tcpts_precision))) == 4]
 
-    ts_mode = statistics.mode([s['unusual_tsval'] for s in all]+[s['other_tsval'] for s in all])
-    ts_diff_mode = statistics.mode([s['unusual_tsval']-s['other_tsval'] for s in all])
-    ts_common_mode = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']<=ts_mode and s['other_tsval']<=ts_mode]
-    ts_common_diff_mode = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']-s['other_tsval']==ts_diff_mode]
+    #ts_mode = statistics.mode([s['unusual_tsval'] for s in all]+[s['other_tsval'] for s in all])
+    #ts_diff_mode = statistics.mode([s['unusual_tsval']-s['other_tsval'] for s in all])
+    #ts_common_mode = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']<=ts_mode and s['other_tsval']<=ts_mode]
+    #ts_common_diff_mode = [s['unusual_packet']-s['other_packet'] for s in all if s['unusual_tsval']-s['other_tsval']==ts_diff_mode]
 
-    print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
-    print('packet_rtt tsval diff=0 quadsummary: %f' % quadsummary(ts0_diffs))
-    print('packet_rtt tsval diff>0 quadsummary: %f' % quadsummary(ts1_diffs))
-    print('packet_rtt tsval diff<=1 quadsummary: %f' % quadsummary(ts2_diffs))
-    print('packet_rtt tsval mode quadsummary: %f' % quadsummary(ts_common_mode))
-    print(len(diffs), len(ts0_diffs)+len(ts1_diffs))
+    #print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
+    #print('packet_rtt tsval diff=0 quadsummary: %f' % quadsummary(ts0_diffs))
+    #print('packet_rtt tsval diff>0 quadsummary: %f' % quadsummary(ts1_diffs))
+    #print('packet_rtt tsval diff<=1 quadsummary: %f' % quadsummary(ts2_diffs))
+    #print('packet_rtt tsval mode quadsummary: %f' % quadsummary(ts_common_mode))
+    #print(len(diffs), len(ts0_diffs)+len(ts1_diffs))
     diffs.sort()
-    cut_off_low = diffs[int(len(diffs)*0.005)]
-    cut_off_high = diffs[int(len(diffs)*0.995)]
+    cut_off_low = diffs[int(len(diffs)*0.008)]
+    cut_off_high = diffs[int(len(diffs)*0.992)]
 
     plt.clf()
     # the histogram of the data
     n, bins, patches = plt.hist(diffs, num_bins, normed=0, color='black', histtype='step', alpha=0.8,
-                                range=(cut_off_low,cut_off_high), label='all')
+                                range=(cut_off_low,cut_off_high), label='All Packets')
     n, bins, patches = plt.hist(ts0_diffs, num_bins, normed=0, color='blue', histtype='step', alpha=0.8,
-                                range=(cut_off_low,cut_off_high), label='tsval diff=0')
-    n, bins, patches = plt.hist(ts1_diffs, num_bins, normed=0, color='red', histtype='step', alpha=0.8,
-                                range=(cut_off_low,cut_off_high), label='tsval diff>0')
-    n, bins, patches = plt.hist(ts2_diffs, num_bins, normed=0, color='orange', histtype='step', alpha=0.8,
-                                range=(cut_off_low,cut_off_high), label='tsval diff<=1')
+                                range=(cut_off_low,cut_off_high), label='TSval Difference == 0')
+    n, bins, patches = plt.hist(ts1_diffs, num_bins, normed=0, color='orange', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='TSval Difference == 1')
+    n, bins, patches = plt.hist(ts2_diffs, num_bins, normed=0, color='red', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='TSval Difference >= 2')
+    #n, bins, patches = plt.hist(ts3_diffs, num_bins, normed=0, color='red', histtype='step', alpha=0.8,
+    #                            range=(cut_off_low,cut_off_high), label='tsval diff == 3')
+    #n, bins, patches = plt.hist(ts4_diffs, num_bins, normed=0, color='brown', histtype='step', alpha=0.8,
+    #                            range=(cut_off_low,cut_off_high), label='tsval diff == 4')
     #n, bins, patches = plt.hist(ts_common_mode, num_bins, normed=0, color='green', histtype='step', alpha=0.8,
     #                            range=(cut_off_low,cut_off_high), label='tsval common mode')
-    n, bins, patches = plt.hist(ts_common_diff_mode, num_bins, normed=0, color='green', histtype='step', alpha=0.8,
-                                range=(cut_off_low,cut_off_high), label='tsval common diff mode')
+    #n, bins, patches = plt.hist(ts_common_diff_mode, num_bins, normed=0, color='green', histtype='step', alpha=0.8,
+    #                            range=(cut_off_low,cut_off_high), label='tsval common diff mode')
     plt.xlabel('RTT Difference')
-    plt.ylabel('Probability')
-    plt.title(r'Histogram - distribution of differences by tsval')
+    #plt.ylabel('Probability')
+    #plt.title(r'Histogram - distribution of differences by tsval')
 
     # Tweak spacing to prevent clipping of ylabel
     plt.subplots_adjust(left=0.15)
@@ -519,6 +364,47 @@ def tsFilteredHistogram():
 #tsFilteredHistogram()
 
 
+def exampleSummaryHistogram():
+    num_bins = 300
+    all = db.subseries('train','long')+db.subseries('test','long')
+    diffs     = [s['unusual_packet']-s['other_packet'] for s in all]
+
+    diffs.sort()
+    cut_off_low = diffs[int(len(diffs)*0.003)]
+    cut_off_high = diffs[int(len(diffs)*0.997)]
+
+    plt.clf()
+    # the histogram of the data
+    n, bins, patches = plt.hist(diffs, num_bins, normed=0, color='black', histtype='step', alpha=0.8,
+                                range=(cut_off_low,cut_off_high), label='all')
+
+    plt.xlabel('RTT Difference')
+    plt.ylabel('Probability')
+    #plt.title(r'Histogram - distribution of differences by tsval')
+
+    w = 25
+    l1,r1,l2,r2,l3,r3 = numpy.percentile(diffs, (50-w,50+w,50-w/2,50+w/2,(50-w)/2,(50+w)/2+50))
+    #plt.plot([l1, 0], [l1, 0.0001], "k--")
+    #plt.plot([r1, 0], [r1, 0.0001], "k--")
+    from matplotlib.patches import FancyBboxPatch
+    currentAxis = plt.gca()
+    currentAxis.add_patch(FancyBboxPatch((l1, 0), 2500, 5000, boxstyle='square', facecolor="blue", alpha=0.4, edgecolor='none'))
+    currentAxis.add_patch(FancyBboxPatch((r1, 0), 2500, 5000, boxstyle='square', facecolor="blue", alpha=0.4, edgecolor='none'))
+    currentAxis.add_patch(FancyBboxPatch((l2, 0), 2500, 5000, boxstyle='square', facecolor="green", alpha=0.4, edgecolor='none'))
+    currentAxis.add_patch(FancyBboxPatch((r2, 0), 2500, 5000, boxstyle='square', facecolor="green", alpha=0.4, edgecolor='none'))
+    currentAxis.add_patch(FancyBboxPatch((l3, 0), 2500, 5000, boxstyle='square', facecolor="green", alpha=0.4, edgecolor='none'))
+    currentAxis.add_patch(FancyBboxPatch((r3, 0), 2500, 5000, boxstyle='square', facecolor="green", alpha=0.4, edgecolor='none'))
+    currentAxis.add_patch(FancyBboxPatch((50, 0), 2500, 5000, boxstyle='square', facecolor="black", alpha=0.4, edgecolor='none'))
+    currentAxis.add_patch(FancyBboxPatch((numpy.mean((l1,r1,l2,r2)), 0), 2500, 5000, boxstyle='square', facecolor="red", alpha=0.4, edgecolor='none'))
+    #currentAxis.add_patch(FancyBboxPatch((numpy.mean((1000)), 0), 1500, 5000, boxstyle='square', facecolor="black", alpha=0.4, edgecolor='none'))
+
+    # Tweak spacing to prevent clipping of ylabel
+    plt.subplots_adjust(left=0.15)
+    #plt.legend()
+    plt.show()
+    #plt.savefig('paper/graphs/dists-vs-dist-of-diffs2.svg')
+
+#exampleSummaryHistogram()
 
 
 
@@ -568,6 +454,12 @@ def plotSingleProbe(probe_id=None):
 
 
 def graphTestResults():
+    basename = os.path.basename(options.db_file)
+    basename,ext = os.path.splitext(basename)
+
+    chartname = "/home/tim/blindspot/research/timing-analysis/paper/figures/results/%s.svg" % (basename)
+    print(chartname)
+    
     plt.clf()
     plt.title("Test Results")
     plt.xlabel('sample size')
@@ -585,10 +477,12 @@ def graphTestResults():
     for c in cursor:
         classifiers.append(c[0])
 
+    best_obs = []
+    best_error = []
     max_obs = 0
     for classifier in classifiers:
         query="""
-        SELECT params FROM classifier_results 
+        SELECT params,num_observations FROM classifier_results 
         WHERE trial_type='test'
          AND classifier=:classifier
          AND (false_positives+false_negatives)/2.0 < 5.0 
@@ -599,7 +493,7 @@ def graphTestResults():
         row = cursor.fetchone()
         if row == None:
             query="""
-            SELECT params FROM classifier_results 
+            SELECT params,(false_positives+false_negatives)/2 FROM classifier_results 
             WHERE trial_type='test' and classifier=:classifier
             ORDER BY (false_positives+false_negatives),num_observations
             LIMIT 1
@@ -609,6 +503,10 @@ def graphTestResults():
             if row == None:
                 sys.stderr.write("WARN: couldn't find test results for classifier '%s'.\n" % classifier)
                 continue
+
+            best_error.append((row[1], classifier))
+        else:
+            best_obs.append((row[1], classifier))
 
         best_params = row[0]
         query="""
@@ -632,13 +530,40 @@ def graphTestResults():
         legend.append((classifier,path))
         color_id = (color_id+1) % len(colors)
 
-    plt.legend([l[1] for l in legend], [l[0] for l in legend], scatterpoints=1, fontsize='xx-small')
-    plt.plot([0, max_obs], [5.0, 5.0], "k--")
-    plt.show()
+    best_obs.sort()
+    best_error.sort()
+    winner = None
+    for bo in best_obs:
+        sys.stdout.write("%d obs / %s" % bo)
+        if winner == None:
+            sys.stdout.write(" (winner)")
+            winner = bo
+        print()
         
+    for be in best_error:
+        sys.stdout.write("%f%% error / %s" % be)
+        if winner == None:
+            sys.stdout.write(" (winner)")
+            winner = be
+        print()
+    
+    plt.legend([l[1] for l in legend], [l[0] for l in legend], scatterpoints=1, fontsize='x-small')
+    plt.plot([0, max_obs], [5.0, 5.0], "k--")
+    plt.xlabel('Number of Observations')
+    plt.ylabel('Error Rate')
+    plt.savefig(chartname)
+    #plt.show()
+    
 graphTestResults()
 
 sys.exit(0)
+
+short_overtime = [(sample['time_of_day'],sample['short']) for sample in timeSeries(db,'train','short')]
+long_overtime = [(sample['time_of_day'],sample['long']) for sample in timeSeries(db,'train','long')]
+diff_overtime = [(sample['time_of_day'],sample['long']-sample['other_cases']) for sample in timeSeries(db,'train','long')]
+short_overtime.sort()
+long_overtime.sort()
+diff_overtime.sort()
 
 plt.clf()
 plt.title("Packet RTT over time")
