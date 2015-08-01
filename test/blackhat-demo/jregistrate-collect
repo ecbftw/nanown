@@ -33,9 +33,7 @@ import nanownlib.storage
 
 parser = argparse.ArgumentParser(
     description="")
-parser.add_argument('-c', dest='cases', type=str, default='{"valid":"0012-5969","invalid":"0012-9999"}',
-                    help='JSON representation of echo timing cases.')
-parser.add_argument('--no-tcpts', action='store_true', help='Disbale TCP timestamp profiling')
+parser.add_argument('--no-tcpts', action='store_true', help='Disable TCP timestamp profiling')
 parser.add_argument('--no-control', action='store_true', help='Do not collect separate control data.  Instead, synthesize it from test and train data.')
 parser.add_argument('session_name', default=None,
                     help='Name for the sampler session (used in output filenames)')
@@ -54,7 +52,7 @@ hostname = options.host
 port = options.port
 protocol = 'http'
 
-cases = json.loads(options.cases)
+cases = {"valid":"0012-8846","invalid":"0012-9999"}
 
 
 def extractReportedRuntime(headers, body):
@@ -68,12 +66,12 @@ def extractReportedRuntime(headers, body):
     return None
 
 
-def sendRequest(data=None):
+def sendRequest(case_data):
     method = 'POST'
     path = '/jregistrate/register'
     url = "%s://%s:%d%s" % (protocol,hostname,port,path)
     headers = {"Content-Type":"application/x-www-form-urlencoded"}
-    body = (b'member_id='+data.encode('utf-8')+b'&last_four=1111&zip_code=97219&username=bob&password=&conf_pwd=')
+    body = (b'member_id='+case_data.encode('utf-8')+b'&last_four=1111&zip_code=97219&username=bob&password=&conf_pwd=')
     req = requests.Request(method, url, headers=headers, data=body).prepare()
 
     retry = True
@@ -81,14 +79,12 @@ def sendRequest(data=None):
         try:
             session = requests.Session()
             response = session.send(req, verify=False)
-            #print(repr(response.raw._original_response.local_address))
             reported = extractReportedRuntime(response.headers, response.text)
             retry = False
         except Exception as e:
             sys.stderr.write("ERROR: HTTP request problem: %s\n" % repr(e))
             time.sleep(1.0)
             sys.stderr.write("ERROR: retrying...\n")
-        #print(data.encode('utf-8'), reported)
         
     return {'userspace_rtt':response.elapsed.microseconds*1000,
             'reported':reported,
@@ -169,7 +165,6 @@ for st,count in sample_types:
             for i in range(1,len(sample_order)):
                 sample_order[i] = (sample_order[i][0],sample_order[0][1])
             random.shuffle(sample_order)
-            #print('after', sample_order)
             
         results = []
         now = int(time.time()*1000000000)
@@ -178,26 +173,20 @@ for st,count in sample_types:
                                   'type':st, 'tc_order':i, 'time_of_day':now},
                                  sample_order[i][1]))
 
-        #print(results)
         db.addProbes(results)
         db.conn.commit()
         sid += 1
 
         if (time.time() > next_report):
-            #s = time.time()
             reportProgress(db, sample_types, start)
-            #print("reportProgress time:", time.time()-s)
             next_report += report_interval
 
 print("probes complete in %f" % (time.time()-start))
 time.sleep(2.0) # Give sniffer a chance to collect remaining packets
 stopSniffer(sniffer)
 
-start = time.time()
 associatePackets(sniffer_fp, db)
 sniffer_fp.close()
-end = time.time()
-print("associate time:", end-start)
 
 if options.no_control:
     print("TODO: implement control synthesizing!")

