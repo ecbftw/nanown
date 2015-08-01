@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<web-app xmlns="http://java.sun.com/xml/ns/j2ee"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://java.sun.com/xml/ns/j2ee http://java.sun.com/xml/ns/j2ee/web-app_2_4.xsd"
+    version="2.4">
+
+    <display-name>jregistrate</display-name>
+    <description>
+      This application is a intentionally vulnerable to registration timing attacks.
+      Copyright (C) 2015 Blindspot Security LLC.  All rights reserved.
+    </description>
+
+    <servlet>
+        <servlet-name>register</servlet-name>
+        <servlet-class>jregistrate.register</servlet-class>
+    </servlet>
+
+    <servlet-mapping>
+        <servlet-name>register</servlet-name>
+        <url-pattern>/register</url-pattern>
+    </servlet-mapping>
+</web-app>
