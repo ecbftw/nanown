@@ -35,8 +35,12 @@ parser = argparse.ArgumentParser(
     description="")
 parser.add_argument('db_file', default=None,
                     help='')
+parser.add_argument('unusual_case', nargs='?', type=str, default=None,
+                    help='The test case that is most unusual from the others. (default: auto detect)')
 options = parser.parse_args()
 db = nanownlib.storage.db(options.db_file)
+if options.unusual_case == None:
+    unusual_case,delta = findUnusualTestCase(db)
 
 
 def differences(db, unusual_case, rtt_type='packet'):
@@ -68,27 +72,22 @@ def timeSeries(db, probe_type, unusual_case):
 #weights = linearWeights(derived, trust, 0.25)
 #print('(test): %f' % weightedMean(derived,weights))
 
-diffs = list(differences(db, 'long'))
-reported_diffs = list(differences(db, 'long', 'reported'))
+diffs = list(differences(db, unusual_case))
+reported_diffs = list(differences(db, unusual_case, 'reported'))
 #shorts = [s['packet_rtt'] for s in samples.values() if s['test_case']=='short']
 #longs = [s['packet_rtt'] for s in samples.values() if s['test_case']=='long']
 
 
 def basicStatistics():
-    print('packet_rtt diff mean: %f' % statistics.mean(diffs))
-    print('packet_rtt diff median: %f' % statistics.median(diffs))
-    print('packet_rtt diff midhinge: %f' % midsummary(diffs))
-    print('packet_rtt diff trimean: %f' % trimean(diffs))
-    print('packet_rtt diff quadsummary: %f' % quadsummary(diffs))
-    print('packet_rtt diff ubersummary: %f' % ubersummary(diffs))
-    print('packet_rtt diff septasummary: %f' % septasummary(diffs))
-    print('packet_rtt diff MAD: %f' % mad(diffs))
+    print('packet_rtt diff midhinge:     %10.2f' % midsummary(diffs))
+    print('packet_rtt diff quadsummary:  %10.2f' % quadsummary(diffs))
+    print('packet_rtt diff septasummary: %10.2f' % septasummary(diffs))
+    print('packet_rtt diff MAD:          %10.2f' % mad(diffs))
     try:
-        print('reported diff trimean: %f' % trimean(reported_diffs))
-        print('reported diff quadsummary: %f' % quadsummary(reported_diffs))
-        print('reported diff ubersummary: %f' % ubersummary(reported_diffs))
-        print('reported diff septasummary: %f' % septasummary(reported_diffs))
-        print('reported diff MAD: %f' % mad(reported_diffs))
+        print('reported diff midhinge:       %10.2f' % midsummary(reported_diffs))
+        print('reported diff quadsummary:    %10.2f' % quadsummary(reported_diffs))
+        print('reported diff septasummary:   %10.2f' % septasummary(reported_diffs))
+        print('reported diff MAD:            %10.2f' % mad(reported_diffs))
 
         #import cProfile
         #start = time.time()
@@ -107,11 +106,11 @@ def basicStatistics():
     #print('tsval diff weighted mean: %f' % tsvalwmean(db.subseries('train','long')+db.subseries('test','long')))
     #print('tsval null diff weighted mean: %f' % tsvalwmean(db.subseries('train_null','long')))
 
-
+basicStatistics()
 
 def exampleBoxTestHistogram(low,high):
     num_bins = 300
-    all = db.subseries('train','long')+db.subseries('test','long')
+    all = db.subseries('train',unusual_case)+db.subseries('test',unusual_case)
     s   = [s['other_packet'] for s in all]
     l   = [s['unusual_packet'] for s in all]
 
@@ -361,7 +360,7 @@ def tsFilteredHistogram():
     plt.show()
     #plt.savefig('paper/graphs/dists-vs-dist-of-diffs2.svg')
 
-#tsFilteredHistogram()
+tsFilteredHistogram()
 
 
 def exampleSummaryHistogram():
@@ -458,7 +457,7 @@ def graphTestResults():
     basename,ext = os.path.splitext(basename)
 
     chartname = "/home/tim/blindspot/research/timing-analysis/paper/figures/results/%s.svg" % (basename)
-    print(chartname)
+    #print(chartname)
     
     plt.clf()
     plt.title("Test Results")
@@ -468,47 +467,27 @@ def graphTestResults():
     colors = ['red','blue','green','purple','orange','black','brown']
     color_id = 0
 
-    cursor = db.conn.cursor()
-    query = """
-      SELECT classifier FROM classifier_results GROUP BY classifier ORDER BY classifier;
-    """
-    cursor.execute(query)
-    classifiers = []
-    for c in cursor:
-        classifiers.append(c[0])
+    best_obs,best_error = evaluateTestResults(db)
+    best_obs =   sorted(best_obs,   key=lambda x: x['num_observations'])
+    best_error = sorted(best_error, key=lambda x: x['error'])
+    winner = None
+    for bo in best_obs:
+        sys.stdout.write("%(num_observations)d obs / %(classifier)s / %(params)s" % bo)
+        if winner == None:
+            sys.stdout.write(" (winner)")
+            winner = bo
+        print()
+        
+    for be in best_error:
+        sys.stdout.write("%(error)f%% error / %(classifier)s / %(params)s" % be)
+        if winner == None:
+            sys.stdout.write(" (winner)")
+            winner = be
+        print()
 
-    best_obs = []
-    best_error = []
+    all = sorted(best_obs+best_error, key=lambda x: x['classifier'])
     max_obs = 0
-    for classifier in classifiers:
-        query="""
-        SELECT params,num_observations FROM classifier_results 
-        WHERE trial_type='test'
-         AND classifier=:classifier
-         AND (false_positives+false_negatives)/2.0 < 5.0 
-        ORDER BY num_observations,(false_positives+false_negatives) 
-        LIMIT 1
-        """
-        cursor.execute(query, {'classifier':classifier})
-        row = cursor.fetchone()
-        if row == None:
-            query="""
-            SELECT params,(false_positives+false_negatives)/2 FROM classifier_results 
-            WHERE trial_type='test' and classifier=:classifier
-            ORDER BY (false_positives+false_negatives),num_observations
-            LIMIT 1
-            """
-            cursor.execute(query, {'classifier':classifier})
-            row = cursor.fetchone()
-            if row == None:
-                sys.stderr.write("WARN: couldn't find test results for classifier '%s'.\n" % classifier)
-                continue
-
-            best_error.append((row[1], classifier))
-        else:
-            best_obs.append((row[1], classifier))
-
-        best_params = row[0]
+    for result in all:
         query="""
         SELECT num_observations,(false_positives+false_negatives)/2.0 FROM classifier_results 
         WHERE trial_type='test'
@@ -516,7 +495,8 @@ def graphTestResults():
          AND params=:params 
         ORDER BY num_observations
         """
-        cursor.execute(query, {'classifier':classifier,'params':best_params})
+        cursor = db.conn.cursor()
+        cursor.execute(query, {'classifier':result['classifier'],'params':result['params']})
 
         num_obs = []
         performance = []
@@ -527,32 +507,15 @@ def graphTestResults():
         #print(num_obs,performance)
         path = plt.scatter(num_obs, performance, color=colors[color_id], s=4, alpha=0.8, linewidths=3.0)
         plt.plot(num_obs, performance, color=colors[color_id], alpha=0.8)
-        legend.append((classifier,path))
+        legend.append((result['classifier'],path))
         color_id = (color_id+1) % len(colors)
 
-    best_obs.sort()
-    best_error.sort()
-    winner = None
-    for bo in best_obs:
-        sys.stdout.write("%d obs / %s" % bo)
-        if winner == None:
-            sys.stdout.write(" (winner)")
-            winner = bo
-        print()
-        
-    for be in best_error:
-        sys.stdout.write("%f%% error / %s" % be)
-        if winner == None:
-            sys.stdout.write(" (winner)")
-            winner = be
-        print()
-    
     plt.legend([l[1] for l in legend], [l[0] for l in legend], scatterpoints=1, fontsize='x-small')
     plt.plot([0, max_obs], [5.0, 5.0], "k--")
     plt.xlabel('Number of Observations')
     plt.ylabel('Error Rate')
-    plt.savefig(chartname)
-    #plt.show()
+    #plt.savefig(chartname)
+    plt.show()
     
 graphTestResults()
 

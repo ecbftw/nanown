@@ -47,7 +47,14 @@ class WorkerThreads(object):
         self.stop()
     
     def stop(self):
-        for i in range(0,len(self.workers)):
+        try:
+            while True:
+                self.workq.get(block=False)
+                self.workq.task_done()
+        except queue.Empty as e:
+            pass
+        
+        for i in range(len(self.workers)):
             self.workq.put(None)
         for w in self.workers:
             w.join()

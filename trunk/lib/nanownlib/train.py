@@ -42,7 +42,7 @@ def trainBoxTest(db, unusual_case, greater, num_observations):
     
     num_trials = 200
     lows = [p[1] for p in performance[0:5]]
-    widths = [w/10.0 for w in range(5,65,5)]
+    widths = [w/10.0 for w in range(5,155,10)]
     performance = []
     for width in widths:
         false_positives = []
@@ -84,7 +84,7 @@ def trainBoxTest(db, unusual_case, greater, num_observations):
 
     
     num_trials = 500
-    widths = [good_width+(x/100.0) for x in range(-70,75,5) if good_width+(x/100.0) > 0.0]
+    widths = [good_width+(x/100.0) for x in range(-120,125,5) if good_width+(x/100.0) > 0.0]
     performance = []
     for width in widths:
         wt.addJob(width, (best_low,best_low+width,num_trials))

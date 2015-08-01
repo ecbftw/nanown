@@ -66,10 +66,10 @@ def trainClassifier(db, unusual_case, greater, classifier, retrain=False):
             start = time.time()
             result = trainer(db,unusual_case,greater,num_obs)
             result['classifier'] = classifier
-            train_time = "%f" % (time.time()-start)
+            train_time = "%8.2f" % (time.time()-start)
             
         error = statistics.mean([result['false_positives'],result['false_negatives']])
-        print("number of observations: %d | error: %f | false_positives: %f | false_negatives: %f | train time: %s | params: %s"
+        print("num. observations: %5d | error: %6.2f | fp: %6.2f | fn: %6.2f | train time: %s | params: %s"
               % (num_obs, error, result['false_positives'],result['false_negatives'], train_time, result['params']))
         db.addClassifierResult(result)
         classifiers[classifier]['train_results'].append(result)
@@ -98,7 +98,6 @@ def testClassifier(db, unusual_case, greater, classifier, retest=False):
         
         false_negatives = 100.0*bad_estimates/num_trials
         false_positives = 100.0*bad_null_estimates/num_trials
-        print("testAux:", num_observations, false_positives, false_negatives, params)
         return false_positives,false_negatives
 
 
@@ -106,9 +105,11 @@ def testClassifier(db, unusual_case, greater, classifier, retest=False):
         jparams = json.dumps(params, sort_keys=True)
         result = db.fetchClassifierResult(classifier, 'test', num_obs, jparams)
         if result:
+            test_time = '(stored)'
             fp = result['false_positives']
             fn = result['false_negatives']
         else:
+            start = time.time()
             fp,fn = testAux(params, num_trials, num_obs)
             result = {'classifier':classifier,
                       'trial_type':"test",
@@ -118,6 +119,10 @@ def testClassifier(db, unusual_case, greater, classifier, retest=False):
                       'false_positives':fp,
                       'false_negatives':fn}
             db.addClassifierResult(result)
+            test_time = '%8.2f' % (time.time()-start)
+            
+        print("num. observations: %5d | error: %6.2f | fp: %6.2f | fn: %6.2f | test time: %s"
+              % (num_obs,(fp+fn)/2.0,fp,fn,test_time))
         return ((fp+fn)/2.0,result)
     
     if retest:
@@ -125,44 +130,43 @@ def testClassifier(db, unusual_case, greater, classifier, retest=False):
         db.deleteClassifierResults(classifier, 'test')
 
 
-    test_results = []
     lte = math.log(target_error/100.0)
     for tr in classifiers[classifier]['train_results']:
         db.resetOffsets()
         params = json.loads(tr['params'])
         num_obs = tr['num_observations']
     
-        print("initial test")
+        print("parameters:", params)
         error,result = getResult(classifier,params,num_obs,num_trials)
-        print("walking up")
+        #print("walking up")
         while (error > target_error) and (num_obs < max_obs):
             increase_factor = 1.5 * lte/math.log(error/100.0) # don't ask how I came up with this
             #print("increase_factor:", increase_factor)
             num_obs = min(int(increase_factor*num_obs), max_obs)
             error,result = getResult(classifier,params,num_obs,num_trials)
 
-        print("walking down")
+        #print("walking down")
         while (num_obs > 0):
-            current_best = (error,result)
             num_obs = int(0.95*num_obs)
             error,result = getResult(classifier,params,num_obs,num_trials)
             if error > target_error:
                 break
-        
-    return current_best
-
+    
 
 if options.unusual_case != None:
     unusual_case,greater = options.unusual_case.split(',')
     greater = bool(int(greater))
+    db.setUnusualCase(unusual_case,greater)
 else:
-    start = time.time()
-    unusual_case,unusual_diff = findUnusualTestCase(db)
-    greater = (unusual_diff > 0)
-    print("unusual_case:", unusual_case)
-    print("unusual_diff:", unusual_diff)
-    end = time.time()
-    print(":", end-start)
+    ucg = db.getUnusualCase()
+    if ucg != None:
+        unusual_case,greater = ucg
+        print("Using cached unusual_case:", unusual_case)
+    else:
+        unusual_case,delta = findUnusualTestCase(db)
+        greater = (delta > 0)
+        print("Auto-detected unusual_case '%s' with delta: %d" %  (unusual_case,delta))
+        db.setUnusualCase(unusual_case,greater)
 
 
 for c in sorted(classifiers.keys()):
@@ -171,17 +175,33 @@ for c in sorted(classifiers.keys()):
     start = time.time()
     print("Training %s..." % c)
     result = trainClassifier(db, unusual_case, greater, c, c in options.retrain)
-    print("%s result:" % c)
-    pprint.pprint(result)
-    print("completed in:", time.time()-start)
+    #print("%s result:" % c)
+    #pprint.pprint(result)
+    print("completed in: %8.2f\n"% (time.time()-start))
 
 db.clearCache()
 
 for c in sorted(classifiers.keys()):
     start = time.time()
     print("Testing %s..." % c)
-    error,result = testClassifier(db, unusual_case, greater, c, c in (options.retest+options.retrain))
-    print("%s result:" % c)
-    pprint.pprint(result)
-    classifiers[c]['test_error'] = error
-    print("completed in:", time.time()-start)
+    testClassifier(db, unusual_case, greater, c, c in (options.retest+options.retrain))
+    print("completed in: %8.2f\n"% (time.time()-start))
+
+
+best_obs,best_error = evaluateTestResults(db)
+best_obs =   sorted(best_obs,   key=lambda x: x['num_observations'])
+best_error = sorted(best_error, key=lambda x: x['error'])
+winner = None
+for bo in best_obs:
+    sys.stdout.write("%(num_observations)5d obs   | %(classifier)12s | %(params)s" % bo)
+    if winner == None:
+        sys.stdout.write(" (winner)")
+        winner = bo
+    print()
+        
+for be in best_error:
+    sys.stdout.write("%(error)3.2f%% error | %(classifier)12s | %(params)s" % be)
+    if winner == None:
+        sys.stdout.write(" (winner)")
+        winner = be
+    print()

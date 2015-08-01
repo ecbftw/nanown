@@ -6,8 +6,13 @@ import uuid
 import random
 import threading
 import sqlite3
+try:
+    import numpy
+except:
+    sys.stderr.write('ERROR: Could not import numpy module.  Ensure it is installed.\n')
+    sys.stderr.write('       Under Debian, the package name is "python3-numpy"\n.')
+    sys.exit(1)
 
-import numpy
 # Don't trust numpy's seeding
 numpy.random.seed(random.SystemRandom().randint(0,2**32-1))
 
@@ -38,7 +43,9 @@ class db(threading.local):
                 """CREATE TABLE meta (id BLOB PRIMARY KEY,
                                       tcpts_mean REAL,
                                       tcpts_stddev REAL,
-                                      tcpts_slopes TEXT)
+                                      tcpts_slopes TEXT,
+                                      unusual_case TEXT,
+                                      greater INTEGER)
                 """)
 
             self.conn.execute(
@@ -195,7 +202,7 @@ class db(threading.local):
 
     def addPackets(self, pkts, window_size):
         query = ("INSERT INTO packets (id,probe_id,sent,observed,tsval,payload_len,tcpseq,tcpack)"
-                 " VALUES(randomblob(16),"
+                 " VALUES(hex(randomblob(16)),"
                  "(SELECT id FROM probes WHERE local_port=:local_port AND :observed>time_of_day"
                  " AND :observed<time_of_day+userspace_rtt+%d" 
                  " ORDER BY time_of_day ASC LIMIT 1),"
@@ -253,4 +260,34 @@ class db(threading.local):
         
         self.conn.execute(query, params)
         self.conn.commit()
+    
+    def setUnusualCase(self, unusual_case, greater):
+        query = """SELECT * FROM meta LIMIT 1"""
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+        row = cursor.fetchone()
+        if row == None:
+            params = {"id":_newid()}
+        else:
+            params = dict(row)
+
+        params["unusual_case"]=unusual_case
+        params["greater"]=greater
         
+        keys = params.keys()
+        columns = ','.join(keys)
+        placeholders = ':'+', :'.join(keys)
+        
+        query = """INSERT OR REPLACE INTO meta (%s) VALUES (%s)""" % (columns, placeholders)
+        cursor.execute(query, params)
+        
+        
+    def getUnusualCase(self):
+        query = """SELECT unusual_case,greater FROM meta LIMIT 1"""
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+        row = cursor.fetchone()
+        if row == None or row[0] == None or row[1] == None:
+            return None
+        else:
+            return tuple(row)

@@ -9,12 +9,7 @@ import tempfile
 import argparse
 import socket
 import json
-try:
-    import requests
-except:
-    sys.stderr.write('ERROR: Could not import requests module.  Ensure it is installed.\n')
-    sys.stderr.write('       Under Debian, the package name is "python3-requests"\n.')
-    sys.exit(1)
+
 
 VERSION = "{DEVELOPMENT}"
 if VERSION == "{DEVELOPMENT}":
@@ -39,12 +34,11 @@ parser.add_argument('db_file', default=None,
 options = parser.parse_args()
 
 
-
 db = nanownlib.storage.db(options.db_file)
 
 start = time.time()
 import cProfile
 #cProfile.run('num_probes = analyzeProbes(db)')
-num_probes = analyzeProbes(db)
+num_probes = analyzeProbes(db, recompute=True)
 end = time.time()
 print("analyzed %d probes' packets in: %f" % (num_probes, end-start))

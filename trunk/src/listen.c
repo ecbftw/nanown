@@ -187,8 +187,10 @@ pcap_t* create_listener(const char* dev, int snaplen, int promisc, int to_ms, ch
     /*besttst = PCAP_TSTAMP_HOST;*/
     if(besttst != -1)
     {
+#if DEBUG
       fprintf(stderr, "INFO: Attempting to set the timestamp source to: %s\n",
               pcap_tstamp_type_val_to_name(besttst));
+#endif
       if(pcap_set_tstamp_type(ret_val, besttst) != 0)
         fprintf(stderr, "WARN: Failed to set preferred timestamp source.\n");
     }

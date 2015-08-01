@@ -6,8 +6,6 @@ import math
 import statistics
 import gzip
 import random
-import scipy
-import scipy.stats
 import numpy
 
 # Don't trust numpy's seeding
@@ -248,6 +246,7 @@ def summaryTest(f, params, greater, samples):
     diffs = [s['unusual_packet']-s['other_packet'] for s in samples]
 
     mh = f(diffs, params['distance'])
+    #print("estimate:", mh)
     if greater:
         if mh > params['threshold']:
             return 1

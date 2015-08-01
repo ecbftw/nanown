@@ -17,8 +17,13 @@ import csv
 import json
 import gzip
 import statistics
-import numpy
-import netifaces
+try:
+    import numpy
+except:
+    sys.stderr.write('ERROR: Could not import numpy module.  Ensure it is installed.\n')
+    sys.stderr.write('       Under Debian, the package name is "python3-numpy"\n.')
+    sys.exit(1)
+
 try:
     import requests
 except:
@@ -38,6 +43,13 @@ def getLocalIP(remote_host, remote_port):
 
 
 def getIfaceForIP(ip):
+    try:
+        import netifaces
+    except:
+        sys.stderr.write('ERROR: Could not import netifaces module.  Ensure it is installed.\n')
+        sys.stderr.write('       Try: pip3 install netifaces\n.')
+        sys.exit(1)
+    
     for iface in netifaces.interfaces():
         addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, None)
         if addrs:
@@ -175,7 +187,7 @@ def OLSRegression(x,y):
 def startSniffer(target_ip, target_port, output_file):
     my_ip = getLocalIP(target_ip, target_port)
     my_iface = getIfaceForIP(my_ip)
-    return subprocess.Popen(['chrt', '-r', '99', 'nanown-csamp', my_iface, my_ip,
+    return subprocess.Popen(['chrt', '-r', '99', 'nanown-listen', my_iface, my_ip,
                              target_ip, "%d" % target_port, output_file, '0'])
 
 def stopSniffer(sniffer):
@@ -302,7 +314,7 @@ def evaluateTrim(db, unusual_case, strim, rtrim):
 
 
 
-def analyzeProbes(db):
+def analyzeProbes(db, trim=None, recompute=False):
     db.conn.execute("CREATE INDEX IF NOT EXISTS packets_probe ON packets (probe_id)")
     db.conn.commit()
 
@@ -315,10 +327,14 @@ def analyzeProbes(db):
     
     pcursor.execute("DELETE FROM trim_analysis")
     db.conn.commit()
+    if recompute:
+        pcursor.execute("DELETE FROM analysis")
+        db.conn.commit()
 
     def loadPackets(db):
         cursor = db.conn.cursor()
-        cursor.execute("SELECT * FROM packets ORDER BY probe_id")
+        #cursor.execute("SELECT * FROM packets ORDER BY probe_id")
+        cursor.execute("SELECT * FROM packets WHERE probe_id NOT IN (SELECT probe_id FROM analysis) ORDER BY probe_id")
 
         probe_id = None
         entry = []
@@ -333,96 +349,83 @@ def analyzeProbes(db):
             entry.append(dict(p))
         ret_val.append((probe_id,entry))
         return ret_val
-    
-    start = time.time()
-    packet_cache = loadPackets(db)
-    print("packets loaded in: %f" % (time.time()-start))
-    
-    count = 0
-    sent_tally = []
-    rcvd_tally = []
-    for probe_id,packets in packet_cache:
-        try:
-            analysis,s,r = analyzePackets(packets, timestamp_precision)
-            analysis['probe_id'] = probe_id
-            sent_tally.append(s)
-            rcvd_tally.append(r)
-            db.addTrimAnalyses([analysis])
-        except Exception as e:
-            #traceback.print_exc()
-            sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % probe_id)
-        
-        #print(pid,analysis)
-        count += 1
-    db.conn.commit()
-    num_sent = statistics.mode(sent_tally)
-    num_rcvd = statistics.mode(rcvd_tally)
-    sent_tally = None
-    rcvd_tally = None
-    print("num_sent: %d, num_rcvd: %d" % (num_sent,num_rcvd))
-    
-    for strim in range(0,num_sent):
-        for rtrim in range(0,num_rcvd):
-            #print(strim,rtrim)
-            if strim == 0 and rtrim == 0:
-                continue # no point in doing 0,0 again
-            for probe_id,packets in packet_cache:
-                try:
-                    analysis,s,r = analyzePackets(packets, timestamp_precision, strim, rtrim)
-                    analysis['probe_id'] = probe_id
-                except Exception as e:
-                    #traceback.print_exc()
-                    sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % probe_id)
-                    
-                db.addTrimAnalyses([analysis])
-    db.conn.commit()
 
-    # Populate analysis table so findUnusualTestCase can give us a starting point
-    pcursor.execute("DELETE FROM analysis")
-    db.conn.commit()
-    pcursor.execute("INSERT INTO analysis SELECT id,probe_id,suspect,packet_rtt,tsval_rtt FROM trim_analysis WHERE sent_trimmed=0 AND rcvd_trimmed=0")
-    
-    unusual_case,delta = findUnusualTestCase(db)
-    evaluations = {}
-    for strim in range(0,num_sent):
-        for rtrim in range(0,num_rcvd):
-            evaluations[(strim,rtrim)] = evaluateTrim(db, unusual_case, strim, rtrim)
-
-    import pprint
-    pprint.pprint(evaluations)
-
-    delta_margin = 0.15
-    best_strim = 0
-    best_rtrim = 0
-    good_delta,good_mad = evaluations[(0,0)]
-    
-    for strim in range(1,num_sent):
-        delta,mad = evaluations[(strim,0)]
-        if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
-            best_strim = strim
-        else:
-            break
-
-    good_delta,good_mad = evaluations[(best_strim,0)]
-    for rtrim in range(1,num_rcvd):
-        delta,mad = evaluations[(best_strim,rtrim)]
-        if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
-            best_rtrim = rtrim
-        else:
-            break
-
-    print("selected trim parameters:",(best_strim,best_rtrim))
-    
-    if best_strim != 0 or best_rtrim !=0:
-        pcursor.execute("DELETE FROM analysis")
+    def processPackets(packet_cache, strim, rtrim):
+        sent_tally = []
+        rcvd_tally = []
+        analyses = []
+        for probe_id,packets in packet_cache:
+            try:
+                analysis,s,r = analyzePackets(packets, timestamp_precision)
+                analysis['probe_id'] = probe_id
+                analyses.append(analysis)
+                sent_tally.append(s)
+                rcvd_tally.append(r)
+            except Exception as e:
+                #traceback.print_exc()
+                sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % probe_id)
+        db.addTrimAnalyses(analyses)
         db.conn.commit()
-        pcursor.execute("INSERT INTO analysis SELECT id,probe_id,suspect,packet_rtt,tsval_rtt FROM trim_analysis WHERE sent_trimmed=? AND rcvd_trimmed=?",
-                        (best_strim,best_rtrim))
+        return statistics.mode(sent_tally),statistics.mode(rcvd_tally)
+    
+    #start = time.time()
+    packet_cache = loadPackets(db)
+    #print("packets loaded in: %f" % (time.time()-start))
 
-    #pcursor.execute("DELETE FROM trim_analysis")
+    if trim != None:
+        best_strim,best_rtrim = trim
+        processPackets(packet_cache, best_strim, best_rtrim)
+    else:
+        num_sent,num_rcvd = processPackets(packet_cache, 0, 0)
+        print("num_sent: %d, num_rcvd: %d" % (num_sent,num_rcvd))
+    
+        for strim in range(0,num_sent):
+            for rtrim in range(0,num_rcvd):
+                #print(strim,rtrim)
+                if strim == 0 and rtrim == 0:
+                    continue # no point in doing 0,0 again
+                processPackets(packet_cache, strim, rtrim)
+
+    
+        unusual_case,delta = findUnusualTestCase(db, (0,0))
+        evaluations = {}
+        for strim in range(0,num_sent):
+            for rtrim in range(0,num_rcvd):
+                evaluations[(strim,rtrim)] = evaluateTrim(db, unusual_case, strim, rtrim)
+
+        import pprint
+        pprint.pprint(evaluations)
+
+        delta_margin = 0.15
+        best_strim = 0
+        best_rtrim = 0
+        good_delta,good_mad = evaluations[(0,0)]
+    
+        for strim in range(1,num_sent):
+            delta,mad = evaluations[(strim,0)]
+            if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
+                best_strim = strim
+            else:
+                break
+
+        good_delta,good_mad = evaluations[(best_strim,0)]
+        for rtrim in range(1,num_rcvd):
+            delta,mad = evaluations[(best_strim,rtrim)]
+            if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
+                best_rtrim = rtrim
+            else:
+                break
+
+        print("selected trim parameters:",(best_strim,best_rtrim))
+    
+    pcursor.execute("""INSERT OR IGNORE INTO analysis 
+                         SELECT id,probe_id,suspect,packet_rtt,tsval_rtt 
+                           FROM trim_analysis 
+                           WHERE sent_trimmed=? AND rcvd_trimmed=?""",
+                    (best_strim,best_rtrim))
     db.conn.commit()
     
-    return count
+    return len(packet_cache)
 
 
         
@@ -441,7 +444,7 @@ def associatePackets(sniffer_fp, db):
     cursor.execute("SELECT count(*) count,min(time_of_day) start,max(time_of_day+userspace_rtt) end from probes")
     ptimes = cursor.fetchone()
     window_size = 100*int((ptimes['end']-ptimes['start'])/ptimes['count'])
-    print("associate window_size:", window_size)
+    #print("associate window_size:", window_size)
 
     db.addPackets(parseJSONLines(sniffer_fp), window_size)
 
@@ -459,28 +462,49 @@ def enumStoredTestCases(db):
     return [tc[0] for tc in cursor]
 
 
-def findUnusualTestCase(db):
+def findUnusualTestCase(db, trim=None):
     test_cases = enumStoredTestCases(db)
-
+    if trim != None:
+        params = {'strim':trim[0], 'rtrim':trim[1]}
+        qsuffix = " AND sent_trimmed=:strim AND rcvd_trimmed=:rtrim"
+        table = "trim_analysis"
+    else:
+        params = {}
+        qsuffix = ""
+        table = "analysis"
+    
     cursor = db.conn.cursor()
-    cursor.execute("SELECT packet_rtt FROM probes,analysis WHERE probes.id=analysis.probe_id AND probes.type in ('train','test')")
+    cursor.execute("SELECT packet_rtt FROM probes,"+table+" a WHERE probes.id=a.probe_id AND probes.type in ('train','test')"+qsuffix, params)
     global_tm = quadsummary([row['packet_rtt'] for row in cursor])
 
     tm_abs = []
     tm_map = {}
+
     # XXX: if more speed needed, percentile extension to sqlite might be handy...
     for tc in test_cases:
-        cursor.execute("SELECT packet_rtt FROM probes,analysis WHERE probes.id=analysis.probe_id AND probes.type in ('train','test') AND probes.test_case=?", (tc,))
+        params['test_case']=tc
+        query = """SELECT packet_rtt FROM probes,"""+table+""" a
+                   WHERE probes.id=a.probe_id AND probes.type in ('train','test') 
+                   AND probes.test_case=:test_case""" + qsuffix
+        cursor.execute(query, params)
         tm_map[tc] = quadsummary([row['packet_rtt'] for row in cursor])
         tm_abs.append((abs(tm_map[tc]-global_tm), tc))
 
     magnitude,tc = max(tm_abs)
-    cursor.execute("SELECT packet_rtt FROM probes,analysis WHERE probes.id=analysis.probe_id AND probes.type in ('train','test') AND probes.test_case<>?", (tc,))
+    params['test_case']=tc
+    query = """SELECT packet_rtt FROM probes,"""+table+""" a
+               WHERE probes.id=a.probe_id AND probes.type in ('train','test') 
+               AND probes.test_case<>:test_case""" + qsuffix
+    cursor.execute(query,params)
     remaining_tm = quadsummary([row['packet_rtt'] for row in cursor])
 
-    ret_val = (tc, tm_map[tc]-remaining_tm)
-    print("unusual_case: %s, delta: %f" % ret_val)
-    return ret_val
+    delta = tm_map[tc]-remaining_tm
+    # Hack to make the chosen unusual_case more intuitive to the user
+    if len(test_cases) == 2 and delta < 0.0:
+        tc = [t for t in test_cases if t != tc][0]
+        delta = abs(delta)
+
+    return tc,delta
 
 
 def reportProgress(db, sample_types, start_time):
@@ -491,11 +515,60 @@ def reportProgress(db, sample_types, start_time):
     for st in sample_types:
         cursor.execute("SELECT count(id) c FROM (SELECT id FROM probes WHERE type=? AND time_of_day>? GROUP BY sample)", (st[0],int(start_time*1000000000)))
         count = cursor.fetchone()[0]
-        output += " | %s remaining: %d" % (st[0], st[1]-count)
+        output += " | %s remaining: %6d" % (st[0], st[1]-count)
         total_completed += count
         total_requested += st[1]
 
     rate = total_completed / (time.time() - start_time)
-    total_time = total_requested / rate        
+    total_time = total_requested / rate
     eta = datetime.datetime.fromtimestamp(start_time+total_time)
-    print("STATUS:",output[3:],"| est. total_time: %s | est. ETA: %s" % (str(datetime.timedelta(seconds=total_time)), str(eta)))
+    print("STATUS:",output[3:],"| est. total_time: %s | ETA: %s" % (str(datetime.timedelta(seconds=total_time)), eta.strftime("%Y-%m-%d %X")))
+
+
+
+def evaluateTestResults(db):
+    cursor = db.conn.cursor()
+    query = """
+      SELECT classifier FROM classifier_results GROUP BY classifier ORDER BY classifier;
+    """
+    cursor.execute(query)
+    classifiers = []
+    for c in cursor:
+        classifiers.append(c[0])
+
+    best_obs = []
+    best_error = []
+    max_obs = 0
+    for classifier in classifiers:
+        query="""
+        SELECT classifier,params,num_observations,(false_positives+false_negatives)/2 error 
+        FROM classifier_results 
+        WHERE trial_type='test'
+         AND classifier=:classifier
+         AND (false_positives+false_negatives)/2.0 < 5.0 
+        ORDER BY num_observations,(false_positives+false_negatives) 
+        LIMIT 1
+        """
+        cursor.execute(query, {'classifier':classifier})
+        row = cursor.fetchone()
+        if row == None:
+            query="""
+            SELECT classifier,params,num_observations,(false_positives+false_negatives)/2 error 
+            FROM classifier_results 
+            WHERE trial_type='test' and classifier=:classifier
+            ORDER BY (false_positives+false_negatives),num_observations
+            LIMIT 1
+            """
+            cursor.execute(query, {'classifier':classifier})
+            row = cursor.fetchone()
+            if row == None:
+                sys.stderr.write("WARN: couldn't find test results for classifier '%s'.\n" % classifier)
+                continue
+            row = dict(row)
+
+            best_error.append(dict(row))
+        else:
+            best_obs.append(dict(row))
+
+
+    return best_obs,best_error
