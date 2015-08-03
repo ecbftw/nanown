@@ -22,7 +22,7 @@ On Debian unstable, you can get these by running:
 ```
 apt-get install python3-requests python3-numpy python3-netifaces python3-matplotlib
 ```
-Otherwise, resort to `pip3`.
+If you can't get the appropriate packages from your distro, resort to `pip3`.
 
 In addition, you'll need to have a C compiler and the development
 package for libpcap installed.  Under Debian this is probably sufficient:
@@ -102,3 +102,18 @@ sample script at `test/blackhat-demo/jregistrate-attack`.
 
 Any questions?  See the source, watch our BlackHat presentation, read
 our research paper, or [post an issue](https://github.com/ecbftw/nanown/issues) on GitHub.
+
+
+# License
+
+Unless otherwise indicated in the source code, this software is licensed
+under the GNU GPL version 3.  See the LICENSE file for details.
+
+
+# Contributing
+
+We certainly welcome and encourage code contributions, no matter how
+small. Currently, this GitHub repository is a mirror of an SVN
+repository. Please don't submit pull requests.  Instead, just contact us
+through the issue tracker and send us a patch if needed.  We may switch
+to git later.
