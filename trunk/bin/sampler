@@ -29,13 +29,15 @@ if VERSION == "{DEVELOPMENT}":
     sys.path.append("%s/../lib" % script_dir)
 
 from nanownlib import *
+from nanownlib.platform import *
+from nanownlib.tcpts import *
 import nanownlib.storage
 
 parser = argparse.ArgumentParser(
     description="")
 parser.add_argument('-c', dest='cases', type=str, default='{"short":10000,"long":13000}',
                     help='JSON representation of echo timing cases.')
-parser.add_argument('--no-tcpts', action='store_true', help='Disbale TCP timestamp profiling')
+parser.add_argument('--no-tcpts', action='store_true', help='Disable TCP timestamp profiling')
 parser.add_argument('--no-control', action='store_true', help='Do not collect separate control data.  Instead, synthesize it from test and train data.')
 parser.add_argument('session_name', default=None,
                     help='Name for the sampler session (used in output filenames)')
@@ -48,13 +50,15 @@ parser.add_argument('port', nargs='?', type=int, default=80,
 options = parser.parse_args()
 
 
-session_name = options.session_name
-num_samples=options.sample_count
-hostname = options.host
-port = options.port
-protocol = 'http'
+num_samples = options.sample_count
+hostname    = options.host
+port        = options.port
+protocol    = 'http'
 
 cases = json.loads(options.cases)
+db_file = "%s.db" % options.session_name
+db = nanownlib.storage.db(db_file)
+
 
 def extractReportedRuntime(headers, body):
     if body.startswith("waited: "):
@@ -63,7 +67,7 @@ def extractReportedRuntime(headers, body):
 
 def sendRequest(data=None):
     method = 'GET'
-    path = '/data/clamav-audit-results.txt?t=' + data
+    path = '/?t=' + data
     url = "%s://%s:%d%s" % (protocol,hostname,port,path)
     headers = {}
     body = (b'')
@@ -73,15 +77,16 @@ def sendRequest(data=None):
     while retry:
         try:
             session = requests.Session()
-            response = session.send(req)
-            #print(repr(response.raw._original_response.local_address))
+            response = session.send(req, allow_redirects=False)
+            #print("sendRequest:", repr(response.raw._original_response.local_address))
             reported = extractReportedRuntime(response.headers, response.text)
             retry = False
         except Exception as e:
             sys.stderr.write("ERROR: HTTP request problem: %s\n" % repr(e))
             time.sleep(1.0)
             sys.stderr.write("ERROR: retrying...\n")
-    
+
+        
     return {'userspace_rtt':response.elapsed.microseconds*1000,
             'reported':reported,
             'local_port':response.raw._original_response.local_address[1]}
@@ -96,8 +101,18 @@ def fetch(probedata, data):
 
 
 setCPUAffinity()
-setTCPTimestamps()
-host_ip = socket.gethostbyname(hostname) #XXX: what about multiple A records?
+time.sleep(0.25) # Give our process a chance to migrate to a different CPU if necessary
+setPowersave(False) # XXX: test this to see if it helps
+setLowLatency(True) # XXX: test this to see if it helps
+tcpts_previous = setTCPTimestamps(True)
+
+
+#XXX: what about multiple A records?
+#     perform this during a script generation step, measuring lowest latency server
+#     and hard-coding the IP and host name separately.  However, including all
+#     server IPs in comments
+host_ip = socket.gethostbyname(hostname) 
+
 
 meta = {'tcpts_mean':None,'tcpts_stddev':None,'tcpts_slopes':None}
 if not options.no_tcpts:
@@ -124,14 +139,56 @@ else:
     sys.stderr.write("INFO: Estimated TCP timestamp precision: %f (stddev: %f, %f%%)\n"
                      % (meta['tcpts_mean'], meta['tcpts_stddev'], 100*meta['tcpts_stddev']/meta['tcpts_mean']))
 
-
-sniffer_fp = tempfile.NamedTemporaryFile('w+t')
-db_file = "%s.db" % session_name
-
-sniffer = startSniffer(host_ip, port, sniffer_fp.name)
-db = nanownlib.storage.db(db_file)
 db.addMeta(meta)
-time.sleep(0.5) # ensure sniffer is fully ready and our process is migrated
+
+
+def findNextSampleID(db):
+    cursor = db.conn.cursor()
+    cursor.execute("SELECT max(sample) FROM probes")
+    row = cursor.fetchone()
+    if row != None and row[0] != None:
+        return row[0]+1
+
+    return 0
+
+
+def collectSamples(db, sample_type, count, sniffer):
+    sniffer.start()
+
+    if not sniffer.is_running():
+        sys.stderr.write('ERROR: Sniffer did not start...\n')
+        return
+        
+    sid = findNextSampleID(db)
+    for k in range(0,count):
+        sample_order = list(cases.items())
+        random.shuffle(sample_order)
+        if sample_type.endswith('null'):
+            for i in range(1,len(sample_order)):
+                sample_order[i] = (sample_order[i][0],sample_order[0][1])
+            random.shuffle(sample_order)
+            
+        results = []
+        now = int(time.time()*1000000000)
+        for i in range(len(sample_order)):
+            results.append(fetch({'sample':sid, 'test_case':sample_order[i][0],
+                                  'type':sample_type, 'tc_order':i, 'time_of_day':now},
+                                 sample_order[i][1]))
+
+        print(results)
+        db.addProbes(results)
+        db.conn.commit()
+        sid += 1
+
+    time.sleep(2.0) # Give sniffer a chance to collect remaining packets
+    sniffer.stop()
+    #print(sniffer.openPacketLog().read())
+    start = time.time()
+    associatePackets(sniffer.openPacketLog(), db)
+    end = time.time()
+    print("associate time:", end-start)
+    
+
 
 if options.no_control:
     num_control = 0
@@ -145,52 +202,19 @@ sample_types = [('train',num_train),
                 ('train_null',num_control),
                 ('test',num_test)]
 
-sid = 0
-report_interval = 20
-start = time.time()
-next_report = start+report_interval
+sniffer = snifferProcess(host_ip, port)
 for st,count in sample_types:
-    if sniffer.poll() != None:
-        sys.stderr.write('ERROR: Sniffer quit, sender exiting...\n')
-        break
-        
-    for k in range(0,count):
-        sample_order = list(cases.items())
-        random.shuffle(sample_order)
-        if st.endswith('null'):
-            for i in range(1,len(sample_order)):
-                sample_order[i] = (sample_order[i][0],sample_order[0][1])
-            random.shuffle(sample_order)
-            #print('after', sample_order)
-            
-        results = []
-        now = int(time.time()*1000000000)
-        for i in range(len(sample_order)):
-            results.append(fetch({'sample':sid, 'test_case':sample_order[i][0],
-                                  'type':st, 'tc_order':i, 'time_of_day':now},
-                                 sample_order[i][1]))
+    collectSamples(db, st,count,sniffer)
 
-        #print(results)
-        db.addProbes(results)
-        db.conn.commit()
-        sid += 1
 
-        if (time.time() > next_report):
-            #s = time.time()
-            reportProgress(db, sample_types, start)
-            #print("reportProgress time:", time.time()-s)
-            next_report += report_interval
+#start = time.time()
+#report_interval = 20
+#next_report = start+report_interval
+#        if (time.time() > next_report):
+#            reportProgress(db, sample_types, start)
+#            next_report += report_interval
 
-print("probes complete in %f" % (time.time()-start))
-time.sleep(2.0) # Give sniffer a chance to collect remaining packets
-stopSniffer(sniffer)
-
-start = time.time()
-associatePackets(sniffer_fp, db)
-sniffer_fp.close()
-end = time.time()
-print("associate time:", end-start)
-
+    
 if options.no_control:
     print("TODO: implement control synthesizing!")
 
@@ -198,3 +222,8 @@ start = time.time()
 num_probes = analyzeProbes(db)
 end = time.time()
 print("analyzed %d probes' packets in: %f" % (num_probes, end-start))
+
+
+setPowersave(True) # XXX: test this to see if it actually helps
+setLowLatency(False) # XXX: test this to see if it actually helps
+setTCPTimestamps(tcpts_previous)

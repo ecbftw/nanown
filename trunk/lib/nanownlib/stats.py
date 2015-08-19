@@ -6,7 +6,12 @@ import math
 import statistics
 import gzip
 import random
-import numpy
+try:
+    import numpy
+except:
+    sys.stderr.write('ERROR: Could not import numpy module.  Ensure it is installed.\n')
+    sys.stderr.write('       Under Debian, the package name is "python3-numpy"\n.')
+    sys.exit(1)
 
 # Don't trust numpy's seeding
 numpy.random.seed(random.SystemRandom().randint(0,2**32-1))
@@ -30,6 +35,26 @@ def cov(x,y):
         products.append((x[i] - mx)*(y[i] - my))
 
     return statistics.mean(products)
+
+    
+def OLSRegression(x,y):
+    #print(x,y)
+    x = numpy.array(x)
+    y = numpy.array(y)
+    #A = numpy.vstack([x, numpy.ones(len(x))]).T
+    #m, c = numpy.linalg.lstsq(A, y)[0] # broken
+    #c,m = numpy.polynomial.polynomial.polyfit(x, y, 1) # less accurate
+    c,m = numpy.polynomial.Polynomial.fit(x,y,1).convert().coef
+
+    #print(m,c)
+
+    #import matplotlib.pyplot as plt
+    #plt.clf()
+    #plt.scatter(x, y)
+    #plt.plot(x, m*x + c, 'r', label='Fitted line')
+    #plt.show()
+    
+    return (m,c)
 
 
 def difference(ls):

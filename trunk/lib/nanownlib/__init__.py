@@ -4,25 +4,14 @@
 import sys
 import time
 import traceback
-import random
-import argparse
 import socket
 import datetime
 import http.client
-import threading
-import queue
 import subprocess
-import multiprocessing
-import csv
+import tempfile
 import json
 import gzip
 import statistics
-try:
-    import numpy
-except:
-    sys.stderr.write('ERROR: Could not import numpy module.  Ensure it is installed.\n')
-    sys.stderr.write('       Under Debian, the package name is "python3-numpy"\n.')
-    sys.exit(1)
 
 try:
     import requests
@@ -58,132 +47,48 @@ def getIfaceForIP(ip):
                     return iface
 
 
-def setTCPTimestamps(enabled=True):
-    fh = open('/proc/sys/net/ipv4/tcp_timestamps', 'r+b')
-    ret_val = False
-    if fh.read(1) == b'1':
-        ret_val = True
-
-    fh.seek(0)
-    if enabled:
-        fh.write(b'1')
-    else:
-        fh.write(b'0')
-    fh.close()
+class snifferProcess(object):
+    my_ip = None
+    my_iface = None
+    target_ip = None
+    target_port = None
+    _proc = None
+    _spool = None
     
-    return ret_val
+    def __init__(self, target_ip, target_port):
+        self.target_ip = target_ip
+        self.target_port = target_port
+        self.my_ip = getLocalIP(target_ip, target_port)
+        self.my_iface = getIfaceForIP(self.my_ip)
+        print(self.my_ip, self.my_iface)
 
+    def start(self):
+        self._spool = tempfile.NamedTemporaryFile('w+t')
+        self._proc = subprocess.Popen(['chrt', '-r', '99', 'nanown-listen',
+                                       self.my_iface, self.my_ip,
+                                       self.target_ip, "%d" % self.target_port,
+                                       self._spool.name, '0'])
+        time.sleep(0.25)
 
-def trickleHTTPRequest(ip,port,hostname):
-    my_port = None
-    try:
-        sock = socket.create_connection((ip, port))
-        my_port = sock.getsockname()[1]
+    def openPacketLog(self):
+        return open(self._spool.name, 'rt')
         
-        #print('.')
-        sock.sendall(b'GET / HTTP/1.1\r\n')
-        time.sleep(0.5)
-        rest = b'''Host: '''+hostname.encode('utf-8')+b'''\r\nUser-Agent: Secret Agent Man\r\nX-Extra: extra read all about it!\r\nConnection: close\r\n'''
-        for r in rest:
-            sock.sendall(bytearray([r]))
-            time.sleep(0.05)
-
-        time.sleep(0.5)
-        sock.sendall('\r\n')
-
-        r = None
-        while r != b'':
-            r = sock.recv(16)
-
-        sock.close()
-    except Exception as e:
-        pass
-
-    return my_port
-
-
-def runTimestampProbes(host_ip, port, hostname, num_trials, concurrency=4): 
-    myq = queue.Queue()
-    def threadWrapper(*args):
-        try:
-            myq.put(trickleHTTPRequest(*args))
-        except Exception as e:
-            sys.stderr.write("ERROR from trickleHTTPRequest: %s\n" % repr(e))
-            myq.put(None)
-
-    threads = []
-    ports = []
-    for i in range(num_trials):
-        if len(threads) >= concurrency:
-            ports.append(myq.get())
-        t = threading.Thread(target=threadWrapper, args=(host_ip, port, hostname))
-        t.start()
-        threads.append(t)
-
-    for t in threads:
-        t.join()
-
-    while myq.qsize() > 0:
-        ports.append(myq.get())
-
-    return ports
-
-
-def computeTimestampPrecision(sniffer_fp, ports):
-    rcvd = []
-    for line in sniffer_fp:
-        p = json.loads(line)
-        if p['sent']==0:
-            rcvd.append((p['observed'],p['tsval'],int(p['local_port'])))
-
-    slopes = []
-    for port in ports:
-        trcvd = [tr for tr in rcvd if tr[2]==port and tr[1]!=0]
-
-        if len(trcvd) < 2:
-            sys.stderr.write("WARN: Inadequate data points.\n")
-            continue
-        
-        if trcvd[0][1] > trcvd[-1][1]:
-            sys.stderr.write("WARN: TSval wrap.\n")
-            continue
-
-        x = [tr[1] for tr in trcvd]
-        y = [tr[0] for tr in trcvd]
-
-        slope,intercept = OLSRegression(x, y)
-        slopes.append(slope)
-
-    if len(slopes) == 0:
-        return None,None,None
-
-    m = statistics.mean(slopes)
-    if len(slopes) == 1:
-        return (m, None, slopes)
-    else:
-        return (m, statistics.stdev(slopes), slopes)
-
+    def stop(self):
+        if self._proc:
+            self._proc.terminate()
+            self._proc.wait(2)
+            if self._proc.poll() == None:
+                self._proc.kill()
+                self._proc.wait(1)
+            self._proc = None
     
-def OLSRegression(x,y):
-    #print(x,y)
-    x = numpy.array(x)
-    y = numpy.array(y)
-    #A = numpy.vstack([x, numpy.ones(len(x))]).T
-    #m, c = numpy.linalg.lstsq(A, y)[0] # broken
-    #c,m = numpy.polynomial.polynomial.polyfit(x, y, 1) # less accurate
-    c,m = numpy.polynomial.Polynomial.fit(x,y,1).convert().coef
+    def is_running(self):
+        return (self._proc.poll() == None)
+            
+    def __del__(self):
+        self.stop()
 
-    #print(m,c)
-
-    #import matplotlib.pyplot as plt
-    #plt.clf()
-    #plt.scatter(x, y)
-    #plt.plot(x, m*x + c, 'r', label='Fitted line')
-    #plt.show()
-    
-    return (m,c)
-
-
+            
 def startSniffer(target_ip, target_port, output_file):
     my_ip = getLocalIP(target_ip, target_port)
     my_iface = getIfaceForIP(my_ip)
@@ -197,16 +102,6 @@ def stopSniffer(sniffer):
         sniffer.kill()
         sniffer.wait(1)
 
-        
-def setCPUAffinity():
-    import ctypes
-    from ctypes import cdll,c_int,byref
-    cpus = multiprocessing.cpu_count()
-    
-    libc = cdll.LoadLibrary("libc.so.6")
-    #libc.sched_setaffinity(os.getpid(), 1, ctypes.byref(ctypes.c_int(0x01)))
-    return libc.sched_setaffinity(0, 4, byref(c_int(0x00000001<<(cpus-1))))
-
 
 # Monkey patching that instruments the HTTPResponse to collect connection source port info
 class MonitoredHTTPResponse(http.client.HTTPResponse):
@@ -214,6 +109,7 @@ class MonitoredHTTPResponse(http.client.HTTPResponse):
 
     def __init__(self, sock, *args, **kwargs):
         self.local_address = sock.getsockname()
+        #print(self.local_address)
         super(MonitoredHTTPResponse, self).__init__(sock,*args,**kwargs)
             
 requests.packages.urllib3.connection.HTTPConnection.response_class = MonitoredHTTPResponse
