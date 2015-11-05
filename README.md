@@ -79,7 +79,7 @@ If you are really dying to use this code right now, just make a copy of
 the `trunk/bin/sampler` script and hack on it until it sends HTTP requests
 that your targeted web application expects.  Be sure to define the test
 cases appropriately.  Then run it to collect at least
-50,000 samples for each the train, test and train_null data sets
+50,000 samples for each of the train, test and train_null data sets
 (150,000 samples total).  NOTE: Your sampler script must be run as `root`
 so it can tweak local networking settings and sniff packets.
 
@@ -100,8 +100,9 @@ samples, distinguishes between them using the best classifier available
 (from step 2) and then repeats as needed.  Consider starting with the
 sample script at `test/blackhat-demo/jregistrate-attack`.
 
-Any questions?  See the source, watch our BlackHat presentation, read
-our research paper, or [post an issue](https://github.com/ecbftw/nanown/issues) on GitHub.
+Any questions?  See the source, watch our [BlackHat presentation](https://www.youtube.com/watch?v=k-Pv3sf3G2A), read
+our [research paper](https://www.blackhat.com/docs/us-15/materials/us-15-Morgan-Web-Timing-Attacks-Made-Practical-wp.pdf),
+or [post an issue](https://github.com/ecbftw/nanown/issues) on GitHub.
 
 
 # License
