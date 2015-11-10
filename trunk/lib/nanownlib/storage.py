@@ -188,10 +188,21 @@ class db(threading.local):
         columns = ','.join(keys)
         placeholders = ':'+', :'.join(keys)
         query = "INSERT INTO %s (id,%s) VALUES ('%s',%s)" % (table, columns, rid, placeholders)
-        #print(row)
+        #print(query,row)
         self.conn.execute(query, row)
         return rid
 
+    def _insertMany(self, table, rows):
+        if len(rows) < 1:
+            return
+        
+        keys = rows[0].keys()
+        columns = ','.join(keys)
+        placeholders = ':'+', :'.join(keys)
+        query = "INSERT INTO %s (id,%s) VALUES (hex(randomblob(16)),%s)" % (table, columns, placeholders)
+        #print(query,row)
+        self.conn.executemany(query, rows)
+    
     def addMeta(self, meta):
         ret_val = self._insert('meta', meta)
         self.conn.commit()
@@ -219,7 +230,7 @@ class db(threading.local):
         return [self._insert('analysis', row) for row in analyses]
 
     def addTrimAnalyses(self, analyses):
-        return [self._insert('trim_analysis', row) for row in analyses]
+        self._insertMany('trim_analysis', analyses)
 
     def addClassifierResult(self, results):
         ret_val = self._insert('classifier_results', results)

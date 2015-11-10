@@ -205,7 +205,7 @@ def evaluateTrim(db, unusual_case, strim, rtrim):
     params = {"strim":strim,"rtrim":rtrim,"unusual_case":unusual_case}
     cursor.execute(query, params)
     differences = [row[0] for row in cursor]
-    
+
     return septasummary(differences),mad(differences)
 
 
@@ -252,7 +252,7 @@ def analyzeProbes(db, trim=None, recompute=False):
         analyses = []
         for probe_id,packets in packet_cache:
             try:
-                analysis,s,r = analyzePackets(packets, timestamp_precision)
+                analysis,s,r = analyzePackets(packets, timestamp_precision,strim,rtrim)
                 analysis['probe_id'] = probe_id
                 analyses.append(analysis)
                 sent_tally.append(s)
@@ -260,8 +260,12 @@ def analyzeProbes(db, trim=None, recompute=False):
             except Exception as e:
                 #traceback.print_exc()
                 sys.stderr.write("WARN: couldn't find enough packets for probe_id=%s\n" % probe_id)
+
+        start = time.time()    
         db.addTrimAnalyses(analyses)
         db.conn.commit()
+        print("addTrimAnalyses: %f" % (time.time()-start))
+
         return statistics.mode(sent_tally),statistics.mode(rcvd_tally)
     
     #start = time.time()
@@ -274,39 +278,30 @@ def analyzeProbes(db, trim=None, recompute=False):
     else:
         num_sent,num_rcvd = processPackets(packet_cache, 0, 0)
         print("num_sent: %d, num_rcvd: %d" % (num_sent,num_rcvd))
-    
-        for strim in range(0,num_sent):
-            for rtrim in range(0,num_rcvd):
-                #print(strim,rtrim)
-                if strim == 0 and rtrim == 0:
-                    continue # no point in doing 0,0 again
-                processPackets(packet_cache, strim, rtrim)
-
-    
         unusual_case,delta = findUnusualTestCase(db, (0,0))
-        evaluations = {}
-        for strim in range(0,num_sent):
-            for rtrim in range(0,num_rcvd):
-                evaluations[(strim,rtrim)] = evaluateTrim(db, unusual_case, strim, rtrim)
-
-        import pprint
-        pprint.pprint(evaluations)
-
+        print("unusual_case: %s, delta: %f" % (unusual_case,delta))
+        
         delta_margin = 0.15
         best_strim = 0
         best_rtrim = 0
-        good_delta,good_mad = evaluations[(0,0)]
-    
+        
+        good_delta,good_mad = evaluateTrim(db, unusual_case, best_strim, best_rtrim)
+        print("trim (%d,%d): delta=%f, mad=%f" % (best_strim,best_rtrim, good_delta, good_mad))
+        
         for strim in range(1,num_sent):
-            delta,mad = evaluations[(strim,0)]
+            processPackets(packet_cache, strim, best_rtrim)
+            delta,mad = evaluateTrim(db, unusual_case, strim, best_rtrim)
+            print("trim (%d,%d): delta=%f, mad=%f" % (strim,best_rtrim, delta, mad))
             if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
                 best_strim = strim
+                good_delta,good_mad = delta,mad
             else:
                 break
 
-        good_delta,good_mad = evaluations[(best_strim,0)]
         for rtrim in range(1,num_rcvd):
-            delta,mad = evaluations[(best_strim,rtrim)]
+            processPackets(packet_cache, best_strim, rtrim)
+            delta,mad = evaluateTrim(db, unusual_case, best_strim, rtrim)
+            print("trim (%d,%d): delta=%f, mad=%f" % (best_strim, rtrim, delta, mad))            
             if delta*good_delta > 0.0 and (abs(good_delta) - abs(delta)) < abs(delta_margin*good_delta) and mad < good_mad:
                 best_rtrim = rtrim
             else:
