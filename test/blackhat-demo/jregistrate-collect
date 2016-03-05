@@ -29,6 +29,8 @@ if VERSION == "{DEVELOPMENT}":
     sys.path.append("%s/../../trunk/lib" % script_dir)
 
 from nanownlib import *
+from nanownlib.platform import *
+from nanownlib.tcpts import *
 import nanownlib.storage
 
 parser = argparse.ArgumentParser(
